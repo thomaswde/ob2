@@ -5,6 +5,7 @@ import type {
   CreateMemoryAtomInput,
   Entity,
   EntityMatch,
+  EntityWithCategory,
   ListEntitiesOptions,
   MemoryAtom,
   QueryAtomsOptions,
@@ -44,6 +45,17 @@ function similarity(a: string, b: string): number {
 export class InMemoryRepository implements Repository {
   private readonly entities = new Map<string, Entity>();
   private readonly atoms = new Map<string, MemoryAtom>();
+
+  private isAtomCurrentlyValid(atom: MemoryAtom): boolean {
+    return !atom.invalidAt || atom.invalidAt.getTime() > Date.now();
+  }
+
+  private sortAtoms(a: MemoryAtom, b: MemoryAtom): number {
+    if (b.importance !== a.importance) {
+      return b.importance - a.importance;
+    }
+    return b.createdAt.getTime() - a.createdAt.getTime();
+  }
 
   async createEntity(input: CreateEntityInput): Promise<Entity> {
     const existing = await this.getEntityByName(input.name);
@@ -127,16 +139,59 @@ export class InMemoryRepository implements Repository {
   }
 
   async queryAtoms(options: QueryAtomsOptions): Promise<MemoryAtom[]> {
-    const needle = options.text.trim().toLowerCase();
-    const now = Date.now();
+    return this.searchValidAtomsLexical(options.text, options.limit ?? 10);
+  }
+
+  async listNonCategoryEntitiesWithCategory(): Promise<EntityWithCategory[]> {
+    return [...this.entities.values()]
+      .filter((entity) => entity.type !== "category")
+      .map((entity) => {
+        const category = entity.parentEntityId ? this.entities.get(entity.parentEntityId) ?? null : null;
+        return {
+          ...entity,
+          categoryId: category?.id ?? null,
+          categoryName: category?.name ?? null,
+          categorySlug: category?.slug ?? null,
+        };
+      })
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  async listValidAtomsForEntity(entityId: string): Promise<MemoryAtom[]> {
+    return [...this.atoms.values()]
+      .filter((atom) => atom.entityId === entityId && this.isAtomCurrentlyValid(atom))
+      .sort((a, b) => this.sortAtoms(a, b));
+  }
+
+  async listLifeStateAtoms(limit = 100): Promise<MemoryAtom[]> {
+    return [...this.atoms.values()]
+      .filter((atom) => this.isAtomCurrentlyValid(atom))
+      .filter((atom) => atom.decayClass === "profile" || atom.decayClass === "preference" || atom.importance >= 0.8)
+      .sort((a, b) => this.sortAtoms(a, b))
+      .slice(0, limit);
+  }
+
+  async listRecentBridgeAtoms(since: Date | null, limit: number): Promise<MemoryAtom[]> {
+    return [...this.atoms.values()]
+      .filter((atom) => this.isAtomCurrentlyValid(atom))
+      .filter((atom) => (since ? atom.createdAt.getTime() > since.getTime() : true))
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+      .slice(0, limit);
+  }
+
+  async searchValidAtomsLexical(text: string, limit: number): Promise<MemoryAtom[]> {
+    const needle = text.trim().toLowerCase();
     const matches = [...this.atoms.values()].filter((atom) => {
-      const stillValid = !atom.invalidAt || atom.invalidAt.getTime() > now;
-      return stillValid && atom.content.toLowerCase().includes(needle);
+      return this.isAtomCurrentlyValid(atom) && atom.content.toLowerCase().includes(needle);
     });
 
     return matches
-      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
-      .slice(0, options.limit ?? 10);
+      .sort((a, b) => this.sortAtoms(a, b))
+      .slice(0, limit);
+  }
+
+  async getLatestCompletedConsolidationAt(): Promise<Date | null> {
+    return null;
   }
 
   async listAtomsForEntity(entityId: string): Promise<MemoryAtom[]> {

@@ -40,3 +40,18 @@ export function getDatabaseUrl(): string {
   loadDotEnv();
   return process.env.DATABASE_URL ?? "postgres://ob2:ob2@127.0.0.1:54329/ob2";
 }
+
+export function getAnthropicApiKey(): string | null {
+  loadDotEnv();
+  return process.env.ANTHROPIC_API_KEY ?? null;
+}
+
+export function getAnthropicModel(): string {
+  loadDotEnv();
+  return process.env.ANTHROPIC_MODEL ?? "claude-3-5-sonnet-latest";
+}
+
+export function shouldUseStubLlm(): boolean {
+  loadDotEnv();
+  return process.env.OB2_USE_STUB_LLM === "1";
+}

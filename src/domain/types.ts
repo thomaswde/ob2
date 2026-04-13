@@ -68,8 +68,35 @@ export interface CaptureMemoryInput {
   metadata?: Record<string, unknown>;
 }
 
+export interface EntityWithCategory extends Entity {
+  categoryId: string | null;
+  categoryName: string | null;
+  categorySlug: string | null;
+}
+
+export interface QueryEntityResult {
+  slug: string;
+  summary: string;
+  content: string;
+}
+
+export interface QueryClassifierDecision {
+  needsMemory: boolean;
+  reason: string;
+}
+
+export interface QueryReasoning {
+  gatesUsed: string[];
+  classifierDecision: QueryClassifierDecision;
+  gate2Confidence?: "high" | "low";
+}
+
 export interface QueryMemoryResult {
-  atoms: MemoryAtom[];
+  lifeState: string;
+  recent: MemoryAtom[];
+  entities: QueryEntityResult[];
+  fallbackAtoms: MemoryAtom[] | null;
+  reasoning: QueryReasoning;
 }
 
 export interface ListEntitiesOptions {
@@ -84,6 +111,14 @@ export interface QueryAtomsOptions {
 export interface EntityMatch {
   entity: Entity;
   similarity: number;
+}
+
+export interface QuerySchema {
+  type: "classification";
+}
+
+export interface ExtractSchema {
+  type: "entity-selection";
 }
 
 export interface CreateMemoryAtomInput {

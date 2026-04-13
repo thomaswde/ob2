@@ -1,11 +1,14 @@
 import path from "node:path";
-import { captureMemory, queryMemory } from "../app/captureMemory.js";
+import { ProjectionRebuilder } from "../app/ProjectionRebuilder.js";
+import { captureMemory } from "../app/captureMemory.js";
+import { createLanguageModel } from "../app/llmFactory.js";
+import { MemoryQueryService } from "../app/MemoryQueryService.js";
 import { loadFixtures } from "../app/fixtures.js";
 import { PostgresRepository } from "../adapters/postgres/PostgresRepository.js";
 import { closePool, getPool } from "../adapters/postgres/db.js";
 import { runMigrations } from "../adapters/postgres/migrations.js";
 import type { CaptureMemoryInput, DecayClass } from "../domain/types.js";
-import { formatAtom, formatEntity } from "./format.js";
+import { formatAtom, formatEntity, formatQueryResult } from "./format.js";
 
 function getRepository(): PostgresRepository {
   return new PostgresRepository(getPool());
@@ -79,17 +82,20 @@ async function handleQuery(args: string[]): Promise<void> {
   }
 
   const repository = getRepository();
-  const result = await queryMemory(repository, text);
+  const languageModel = createLanguageModel();
+  const result = await new MemoryQueryService(repository, languageModel).query(text);
+  console.log(formatQueryResult(result));
+}
 
-  if (result.atoms.length === 0) {
-    console.log("No atoms found.");
-    return;
+async function handleProject(args: string[]): Promise<void> {
+  const subcommand = args[0];
+  if (subcommand !== "rebuild") {
+    throw new Error(`Unknown project command: ${subcommand ?? "none"}`);
   }
 
-  for (const atom of result.atoms) {
-    console.log(formatAtom(atom));
-    console.log("---");
-  }
+  const repository = getRepository();
+  const result = await new ProjectionRebuilder(repository).rebuild();
+  console.log(`Projection rebuilt at ${result.outputPath} (${result.filesWritten} files).`);
 }
 
 async function handleEntity(args: string[]): Promise<void> {
@@ -169,12 +175,16 @@ async function main(): Promise<void> {
       await handleEntity(rest);
       return;
     }
+    if (command === "project") {
+      await handleProject(rest);
+      return;
+    }
     if (command === "fixtures") {
       await handleFixtures(rest);
       return;
     }
 
-    console.log("Usage: ob <db|capture|query|entity|fixtures> ...");
+    console.log("Usage: ob <db|capture|query|entity|project|fixtures> ...");
   } finally {
     await closePool();
   }
