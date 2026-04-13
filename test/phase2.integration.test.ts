@@ -7,7 +7,17 @@ import { MemoryQueryService } from "../src/app/MemoryQueryService.js";
 import { captureMemory } from "../src/app/captureMemory.js";
 import { loadFixtures } from "../src/app/fixtures.js";
 import { StubLanguageModel } from "../src/adapters/llm/StubLanguageModel.js";
+import { QUERY_HARD_CAP_TOKENS } from "../src/domain/constants.js";
 import { InMemoryRepository } from "../src/testing/inMemoryRepository.js";
+import { makeId } from "../src/utils/crypto.js";
+import { slugify } from "../src/utils/text.js";
+
+function bundleChars(result: Awaited<ReturnType<MemoryQueryService["query"]>>): number {
+  const entityChars = result.entities.reduce((sum, entity) => sum + entity.summary.length + entity.content.length, 0);
+  const recentChars = result.recent.reduce((sum, atom) => sum + atom.content.length, 0);
+  const fallbackChars = (result.fallbackAtoms ?? []).reduce((sum, atom) => sum + atom.content.length, 0);
+  return result.lifeState.length + entityChars + recentChars + fallbackChars;
+}
 
 describe("Phase 2 services", () => {
   const repository = new InMemoryRepository();
@@ -64,6 +74,42 @@ describe("Phase 2 services", () => {
     expect(result.recent.some((atom) => atom.content.includes("aisle seats"))).toBe(true);
   });
 
+  it("answers vehicle queries from Gate 2 without falling back to Gate 3", async () => {
+    const result = await queryService.query("what vehicles do I own");
+
+    expect(result.entities.some((entity) => entity.slug === "bmw-r75-5")).toBe(true);
+    expect(result.entities.some((entity) => entity.slug === "subaru-outback")).toBe(true);
+    expect(result.reasoning.gatesUsed.includes("gate3")).toBe(false);
+    expect(result.reasoning.gate2Confidence).toBe("high");
+  });
+
+  it("uses Gate 3 trigram-style fallback for weaker lexical cues", async () => {
+    const result = await queryService.query("motorcycle restoration");
+
+    expect(result.entities).toHaveLength(0);
+    expect(result.reasoning.gatesUsed.includes("gate3")).toBe(true);
+    expect(result.fallbackAtoms?.some((atom) => atom.content.includes("BMW R75/5 motorcycle"))).toBe(true);
+  });
+
+  it("trims oversized query bundles to stay within the hard cap", async () => {
+    for (let index = 0; index < 15; index += 1) {
+      await captureMemory(repository, {
+        content: `Recent note ${index}: Morgan should remember this intentionally verbose travel preference detail about aisle seats, backup plans, family pacing, and airport recovery windows.`,
+        sourceRef: `phase2:trim:${index}`,
+        entityHint: "Morgan Chen",
+        importance: 0.81,
+        decayClass: "preference",
+      });
+    }
+    await new ProjectionRebuilder(repository, rootDir).rebuild();
+
+    const result = await queryService.query("what should you remember about me");
+
+    expect(bundleChars(result)).toBeLessThanOrEqual(QUERY_HARD_CAP_TOKENS * 4);
+    expect(result.reasoning.totalDurationMs).toBeTypeOf("number");
+    expect(result.reasoning.gateTimingsMs?.gate0).toBeTypeOf("number");
+  });
+
   it("invalidates cached life state reads when the file mtime changes", async () => {
     const memoryPath = path.join(rootDir, "memory", "life_state.md");
     const first = await queryService.query("what should you remember about me");
@@ -74,5 +120,41 @@ describe("Phase 2 services", () => {
 
     const second = await queryService.query("what should you remember about me");
     expect(second.lifeState).toContain("OVERRIDDEN");
+  });
+
+  it("groups life state atoms by category even when the entity is outside the index cap", async () => {
+    const overflowRepository = new InMemoryRepository();
+    await overflowRepository.seedTopLevelCategories();
+    const work = await overflowRepository.getEntityByName("work");
+    expect(work).toBeTruthy();
+
+    for (let index = 0; index < 205; index += 1) {
+      const name = `Work Entity ${index.toString().padStart(3, "0")}`;
+      await overflowRepository.createEntity({
+        id: makeId(),
+        name,
+        slug: slugify(name),
+        type: "other",
+        parentEntityId: work!.id,
+      });
+    }
+
+    await captureMemory(overflowRepository, {
+      content: "Work Entity 204 carries a high-priority planning note.",
+      sourceRef: "phase2:overflow",
+      entityHint: "Work Entity 204",
+      importance: 0.95,
+      decayClass: "profile",
+    });
+
+    const overflowRoot = await mkdtemp(path.join(os.tmpdir(), "ob2-phase2-overflow-"));
+    try {
+      await new ProjectionRebuilder(overflowRepository, overflowRoot).rebuild();
+      const lifeState = await readFile(path.join(overflowRoot, "memory", "life_state.md"), "utf8");
+      expect(lifeState).toContain("## work");
+      expect(lifeState).toContain("Work Entity 204 carries a high-priority planning note.");
+    } finally {
+      await rm(overflowRoot, { recursive: true, force: true });
+    }
   });
 });

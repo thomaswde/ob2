@@ -19,6 +19,8 @@ interface CachedFile {
   content: string;
 }
 
+type StepTimer = <T>(name: string, fn: () => Promise<T>) => Promise<T>;
+
 function estimateTokens(value: string): number {
   return Math.ceil(value.length / 4);
 }
@@ -114,6 +116,11 @@ export class MemoryQueryService {
     };
 
     while (totalTokens() > QUERY_HARD_CAP_TOKENS) {
+      if (clone.recent.length > 0) {
+        clone.recent.pop();
+        continue;
+      }
+
       if (clone.fallbackAtoms && clone.fallbackAtoms.length > 0) {
         clone.fallbackAtoms.pop();
         continue;
@@ -133,11 +140,6 @@ export class MemoryQueryService {
         continue;
       }
 
-      if (clone.recent.length > 0) {
-        clone.recent.pop();
-        continue;
-      }
-
       if (clone.lifeState.length > 0) {
         clone.lifeState = trimStringToTokens(clone.lifeState, Math.max(40, estimateTokens(clone.lifeState) - 80));
         continue;
@@ -154,18 +156,38 @@ export class MemoryQueryService {
   }
 
   async query(text: string, fallbackLimit = DEFAULT_QUERY_LIMIT): Promise<QueryMemoryResult> {
-    const classifierDecision = await this.languageModel.classify(`Query: ${text}`, { type: "classification" });
+    const gateTimingsMs: Record<string, number> = {};
+    const queryStartedAt = Date.now();
+    const timeStep: StepTimer = async <T>(name: string, fn: () => Promise<T>): Promise<T> => {
+      const startedAt = Date.now();
+      try {
+        return await fn();
+      } finally {
+        gateTimingsMs[name] = Date.now() - startedAt;
+      }
+    };
+
+    const classifierDecision = await timeStep("gate0", async () =>
+      this.languageModel.classify(`Query: ${text}`, { type: "classification" }),
+    );
     if (!classifierDecision.needsMemory) {
-      return this.buildEmptyResult(false, classifierDecision.reason);
+      const result = this.buildEmptyResult(false, classifierDecision.reason);
+      result.reasoning.gateTimingsMs = gateTimingsMs;
+      result.reasoning.totalDurationMs = Date.now() - queryStartedAt;
+      return result;
     }
 
     const gatesUsed = ["gate0", "gate1", "gate1.5", "gate2"];
-    const lifeState = await this.readCached(path.join(this.memoryDir, "life_state.md"));
+    const lifeState = await timeStep("gate1", async () => this.readCached(path.join(this.memoryDir, "life_state.md")));
     const indexContent = await this.readCached(path.join(this.memoryDir, "index.md"));
-    const since = await this.repository.getLatestCompletedConsolidationAt();
-    const recent = await this.repository.listRecentBridgeAtoms(since, DEFAULT_RECENT_BRIDGE_LIMIT);
+    const recent = await timeStep("gate1.5", async () => {
+      const since = await this.repository.getLatestCompletedConsolidationAt();
+      return this.repository.listRecentBridgeAtoms(since, DEFAULT_RECENT_BRIDGE_LIMIT);
+    });
     const indexEntries = parseIndexEntries(indexContent);
-    const gate2 = await this.languageModel.extract(`Query: ${text}\nIndex:\n${indexContent}`, { type: "entity-selection" });
+    const gate2 = await timeStep("gate2", async () =>
+      this.languageModel.extract(`Query: ${text}\nIndex:\n${indexContent}`, { type: "entity-selection" }),
+    );
     const entities: QueryEntityResult[] = [];
 
     for (const slug of gate2.slugs) {
@@ -180,7 +202,7 @@ export class MemoryQueryService {
     let fallbackAtoms: MemoryAtom[] | null = null;
     if (entities.length === 0 || gate2.confidence === "low") {
       gatesUsed.push("gate3");
-      fallbackAtoms = await this.repository.searchValidAtomsLexical(text, fallbackLimit);
+      fallbackAtoms = await timeStep("gate3", async () => this.repository.searchValidAtomsLexical(text, fallbackLimit));
     }
 
     return this.trimResult({
@@ -192,6 +214,8 @@ export class MemoryQueryService {
         gatesUsed,
         classifierDecision,
         gate2Confidence: gate2.confidence,
+        gateTimingsMs,
+        totalDurationMs: Date.now() - queryStartedAt,
       },
     });
   }

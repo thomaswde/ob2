@@ -52,6 +52,17 @@ export function formatQueryResult(result: QueryMemoryResult): string {
     }
   }
 
+  if (result.reasoning.gateTimingsMs) {
+    lines.push("", "timings_ms:");
+    for (const [gate, durationMs] of Object.entries(result.reasoning.gateTimingsMs)) {
+      lines.push(`- ${gate}: ${durationMs}`);
+    }
+  }
+
+  if (typeof result.reasoning.totalDurationMs === "number") {
+    lines.push(`total_ms: ${result.reasoning.totalDurationMs}`);
+  }
+
   lines.push("", `gates: ${result.reasoning.gatesUsed.join(", ")}`);
   return lines.join("\n");
 }

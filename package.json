@@ -12,6 +12,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "ob": "tsx src/cli/index.ts",
+    "benchmark:query": "tsx src/testing/queryBenchmark.ts",
     "db:migrate": "tsx src/cli/index.ts db migrate",
     "db:reset": "tsx src/cli/index.ts db reset --force",
     "fixtures:load": "tsx src/cli/index.ts fixtures load fixtures/morgan.json",
