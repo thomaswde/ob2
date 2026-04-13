@@ -1,0 +1,16 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: ob2-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ob2
+      POSTGRES_USER: ob2
+      POSTGRES_PASSWORD: ob2
+    ports:
+      - "54329:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:
