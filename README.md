@@ -2,7 +2,7 @@
 
 Open Brain 2 is a Postgres-backed personal memory substrate for AI agents. Phase 2 adds a deterministic markdown projection, an injected LLM seam, and a retrieval cascade that decides when memory is needed, reads the derived projection, bridges recent unconsolidated atoms, and falls back to lexical search when entity retrieval is weak.
 
-This repo intentionally stops short of consolidation, markdown projection, HTTP, MCP, and LLM-driven retrieval. Those are planned for later phases in [planning_docs/OB2_roadmap_v2.md](/home/vincent/workspace/ob2/planning_docs/OB2_roadmap_v2.md).
+This repo now includes the Phase 2 projection and retrieval stack. It still intentionally stops short of consolidation, HTTP, and MCP transport work, which remain planned for later phases in [planning_docs/OB2_roadmap_v2.md](/home/vincent/workspace/ob2/planning_docs/OB2_roadmap_v2.md).
 
 ## Phase 2 scope
 
@@ -20,7 +20,21 @@ Phase 2 still does not deliver:
 - Consolidation or supersession workflows
 - HTTP or MCP transports
 - Automatic new-entity creation during capture
-- Consolidation writes or supersession workflows
+- Consolidation writes, correction workflows, or supersession workflows
+
+What is finished in this repo today:
+
+- the mechanical markdown projection under `memory/`
+- the injected `LanguageModel` seam and deterministic stub
+- Gate 0 through Gate 3 retrieval, including index-guided reads and lexical fallback
+- replay-safe fixture loading and CLI access to capture, rebuild, and query flows
+
+What is explicitly deferred to Phase 3:
+
+- LLM-driven entity synthesis and consolidation
+- contradiction detection and review items
+- supersession chains and correction application
+- projection updates driven by consolidation runs rather than manual rebuilds
 
 ## Architecture
 
@@ -140,7 +154,9 @@ Phase 1 does not create new entities from loose hints. That work is intentionall
 - Gate 1 reads `memory/life_state.md`.
 - Gate 1.5 bridges recently captured atoms that have not been consolidated.
 - Gate 2 uses `memory/index.md` to choose entity files to read.
-- Gate 3 falls back to lexical search over valid atoms when Gate 2 is empty or low confidence.
+- Gate 3 falls back to trigram-style lexical search over valid atoms, re-ranked by match quality, importance, and recency when Gate 2 is empty or low confidence.
+
+`queryMemory` also records per-gate timings and total duration so the retrieval path can be benchmarked or inspected during local debugging.
 
 The CLI uses Anthropic-backed Claude Sonnet when `ANTHROPIC_API_KEY` is set. Tests can opt into a stubbed model with an internal override.
 
@@ -163,6 +179,7 @@ Available commands:
 - `npm run check`
 - `npm test`
 - `npm run build`
+- `npm run benchmark:query`
 
 Test layout:
 
@@ -178,6 +195,7 @@ Important: the Postgres-backed tests are designed to run when `docker compose` i
 - The README documents the intended Docker-backed local workflow, but this particular implementation session ran in an environment without Docker or Postgres binaries, so the Postgres integration path could not be executed here.
 - `entity show` looks up entities by exact name.
 - Query quality still depends on the simple Phase 2 projection and a lightweight lexical fallback.
+- Query quality still depends on the simple Phase 2 projection rather than Phase 3 consolidation-driven synthesis.
 - Schema tables for consolidation and correction exist, but no runtime flows populate them yet.
 - `ob query` requires an Anthropic API key in normal runtime use.
 

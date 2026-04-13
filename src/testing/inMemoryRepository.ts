@@ -42,6 +42,45 @@ function similarity(a: string, b: string): number {
   return overlap / Math.max(union, 1);
 }
 
+function normalize(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function tokenize(value: string): string[] {
+  return normalize(value)
+    .replace(/[^a-z0-9\s-]/g, " ")
+    .split(/\s+/)
+    .filter((token) => token.length > 0);
+}
+
+function lexicalScore(query: string, content: string): number {
+  const phraseSimilarity = similarity(query, content);
+  const queryTokens = tokenize(query);
+  const contentTokens = tokenize(content);
+
+  if (queryTokens.length === 0 || contentTokens.length === 0) {
+    return phraseSimilarity;
+  }
+
+  const exactOverlap =
+    queryTokens.filter((token) => contentTokens.includes(token)).length / queryTokens.length;
+  const fuzzyOverlap =
+    queryTokens.reduce((sum, queryToken) => {
+      let best = 0;
+      for (const contentToken of contentTokens) {
+        best = Math.max(best, similarity(queryToken, contentToken));
+      }
+      return sum + best;
+    }, 0) / queryTokens.length;
+
+  return Math.max(phraseSimilarity, exactOverlap, fuzzyOverlap);
+}
+
+function recencyScore(createdAt: Date): number {
+  const ageInDays = Math.max(0, (Date.now() - createdAt.getTime()) / 86_400_000);
+  return 1 / (1 + ageInDays);
+}
+
 export class InMemoryRepository implements Repository {
   private readonly entities = new Map<string, Entity>();
   private readonly atoms = new Map<string, MemoryAtom>();
@@ -180,13 +219,25 @@ export class InMemoryRepository implements Repository {
   }
 
   async searchValidAtomsLexical(text: string, limit: number): Promise<MemoryAtom[]> {
-    const needle = text.trim().toLowerCase();
-    const matches = [...this.atoms.values()].filter((atom) => {
-      return this.isAtomCurrentlyValid(atom) && atom.content.toLowerCase().includes(needle);
-    });
+    const matches = [...this.atoms.values()]
+      .filter((atom) => this.isAtomCurrentlyValid(atom))
+      .map((atom) => ({
+        atom,
+        lexical: lexicalScore(text, atom.content),
+        recency: recencyScore(atom.createdAt),
+      }))
+      .filter((item) => item.lexical >= 0.1);
 
     return matches
-      .sort((a, b) => this.sortAtoms(a, b))
+      .sort((a, b) => {
+        const scoreA = a.lexical * 0.7 + a.atom.importance * 0.2 + a.recency * 0.1;
+        const scoreB = b.lexical * 0.7 + b.atom.importance * 0.2 + b.recency * 0.1;
+        if (scoreB !== scoreA) {
+          return scoreB - scoreA;
+        }
+        return this.sortAtoms(a.atom, b.atom);
+      })
+      .map((item) => item.atom)
       .slice(0, limit);
   }
 

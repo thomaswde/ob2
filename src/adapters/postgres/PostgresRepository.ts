@@ -327,12 +327,24 @@ export class PostgresRepository implements Repository {
   async searchValidAtomsLexical(text: string, limit: number): Promise<MemoryAtom[]> {
     const result = await this.pool.query<AtomRow>(
       `
+        WITH ranked_atoms AS (
+          SELECT
+            *,
+            GREATEST(
+              similarity(lower(content), lower($1)),
+              word_similarity(lower(content), lower($1))
+            ) AS lexical_score,
+            (1 / (1 + (EXTRACT(EPOCH FROM (NOW() - created_at)) / 86400.0))) AS recency_score
+          FROM memory_atom
+          WHERE invalid_at IS NULL OR invalid_at > NOW()
+        )
         SELECT *
-        FROM memory_atom
-        WHERE
-          content ILIKE '%' || $1 || '%'
-          AND (invalid_at IS NULL OR invalid_at > NOW())
-        ORDER BY importance DESC, created_at DESC
+        FROM ranked_atoms
+        WHERE lexical_score >= 0.1
+        ORDER BY
+          ((lexical_score * 0.7) + (importance * 0.2) + (recency_score * 0.1)) DESC,
+          importance DESC,
+          created_at DESC
         LIMIT $2
       `,
       [text, limit],

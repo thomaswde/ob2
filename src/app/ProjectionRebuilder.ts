@@ -88,8 +88,12 @@ export class ProjectionRebuilder {
 
   async rebuild(): Promise<{ outputPath: string; filesWritten: number }> {
     const entities = (await this.repository.listNonCategoryEntitiesWithCategory()).slice(0, PROJECTION_INDEX_LIMIT);
+    const allEntities = await this.repository.listEntities();
     const lifeStateAtoms = await this.repository.listLifeStateAtoms();
-    const entityById = new Map(entities.map((entity) => [entity.id, entity]));
+    const entityById = new Map(allEntities.map((entity) => [entity.id, entity]));
+    const categoryById = new Map(
+      allEntities.filter((entity) => entity.type === "category").map((entity) => [entity.id, entity]),
+    );
 
     await rm(this.tempDir, { recursive: true, force: true });
     await mkdir(path.join(this.tempDir, "entities"), { recursive: true });
@@ -112,7 +116,8 @@ export class ProjectionRebuilder {
     const lifeStateGroups = new Map<string, MemoryAtom[]>();
     for (const atom of lifeStateAtoms) {
       const entity = atom.entityId ? entityById.get(atom.entityId) ?? null : null;
-      const groupName = entity?.categoryName ?? entity?.name ?? "uncategorized";
+      const category = entity?.parentEntityId ? categoryById.get(entity.parentEntityId) ?? null : null;
+      const groupName = category?.name ?? entity?.name ?? "uncategorized";
       const existing = lifeStateGroups.get(groupName) ?? [];
       existing.push(atom);
       lifeStateGroups.set(groupName, existing);

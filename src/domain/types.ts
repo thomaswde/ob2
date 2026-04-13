@@ -89,6 +89,8 @@ export interface QueryReasoning {
   gatesUsed: string[];
   classifierDecision: QueryClassifierDecision;
   gate2Confidence?: "high" | "low";
+  gateTimingsMs?: Record<string, number>;
+  totalDurationMs?: number;
 }
 
 export interface QueryMemoryResult {
