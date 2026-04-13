@@ -15,6 +15,7 @@
     "db:migrate": "tsx src/cli/index.ts db migrate",
     "db:reset": "tsx src/cli/index.ts db reset --force",
     "fixtures:load": "tsx src/cli/index.ts fixtures load fixtures/morgan.json",
+    "project:rebuild": "tsx src/cli/index.ts project rebuild",
     "docker:up": "docker compose up -d postgres",
     "docker:down": "docker compose down"
   },

@@ -1,6 +1,6 @@
-import { DEFAULT_QUERY_LIMIT, ENTITY_FUZZY_MATCH_THRESHOLD } from "../domain/constants.js";
+import { ENTITY_FUZZY_MATCH_THRESHOLD } from "../domain/constants.js";
 import type { Repository } from "../domain/repository.js";
-import type { CaptureMemoryInput, MemoryAtom, QueryMemoryResult } from "../domain/types.js";
+import type { CaptureMemoryInput, MemoryAtom } from "../domain/types.js";
 import { validateCaptureMemoryInput } from "../domain/validation.js";
 import { makeFingerprint, makeId } from "../utils/crypto.js";
 
@@ -42,14 +42,4 @@ export async function captureMemory(repository: Repository, input: CaptureMemory
     invalidAt: validated.invalidAt,
     metadata: validated.metadata,
   });
-}
-
-export async function queryMemory(
-  repository: Repository,
-  text: string,
-  limit = DEFAULT_QUERY_LIMIT,
-): Promise<QueryMemoryResult> {
-  // Phase 1 stub: direct lexical query over currently-valid atoms.
-  const atoms = await repository.queryAtoms({ text, limit });
-  return { atoms };
 }

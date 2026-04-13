@@ -3,6 +3,7 @@ import type {
   CreateMemoryAtomInput,
   Entity,
   EntityMatch,
+  EntityWithCategory,
   ListEntitiesOptions,
   MemoryAtom,
   QueryAtomsOptions,
@@ -18,6 +19,12 @@ export interface Repository {
   findEntityExact(name: string): Promise<Entity | null>;
   findEntityFuzzy(name: string, minimumSimilarity: number): Promise<EntityMatch | null>;
   queryAtoms(options: QueryAtomsOptions): Promise<MemoryAtom[]>;
+  listNonCategoryEntitiesWithCategory(): Promise<EntityWithCategory[]>;
+  listValidAtomsForEntity(entityId: string): Promise<MemoryAtom[]>;
+  listLifeStateAtoms(limit?: number): Promise<MemoryAtom[]>;
+  listRecentBridgeAtoms(since: Date | null, limit: number): Promise<MemoryAtom[]>;
+  searchValidAtomsLexical(text: string, limit: number): Promise<MemoryAtom[]>;
+  getLatestCompletedConsolidationAt(): Promise<Date | null>;
   listAtomsForEntity(entityId: string): Promise<MemoryAtom[]>;
   countMemoryAtoms(): Promise<number>;
   deleteAllData(): Promise<void>;

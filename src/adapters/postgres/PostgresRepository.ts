@@ -6,6 +6,7 @@ import type {
   CreateMemoryAtomInput,
   Entity,
   EntityMatch,
+  EntityWithCategory,
   ListEntitiesOptions,
   MemoryAtom,
   QueryAtomsOptions,
@@ -45,6 +46,12 @@ type AtomRow = QueryResultRow & {
   updated_at: Date;
 };
 
+type EntityWithCategoryRow = EntityRow & {
+  category_id: string | null;
+  category_name: string | null;
+  category_slug: string | null;
+};
+
 function mapEntity(row: EntityRow): Entity {
   return {
     id: row.id,
@@ -78,6 +85,15 @@ function mapAtom(row: AtomRow): MemoryAtom {
     metadata: row.metadata,
     createdAt: new Date(row.created_at),
     updatedAt: new Date(row.updated_at),
+  };
+}
+
+function mapEntityWithCategory(row: EntityWithCategoryRow): EntityWithCategory {
+  return {
+    ...mapEntity(row),
+    categoryId: row.category_id,
+    categoryName: row.category_name,
+    categorySlug: row.category_slug,
   };
 }
 
@@ -240,6 +256,75 @@ export class PostgresRepository implements Repository {
   }
 
   async queryAtoms(options: QueryAtomsOptions): Promise<MemoryAtom[]> {
+    return this.searchValidAtomsLexical(options.text, options.limit ?? 10);
+  }
+
+  async listNonCategoryEntitiesWithCategory(): Promise<EntityWithCategory[]> {
+    const result = await this.pool.query<EntityWithCategoryRow>(
+      `
+        SELECT
+          entity.*,
+          category.id AS category_id,
+          category.name AS category_name,
+          category.slug AS category_slug
+        FROM entity
+        LEFT JOIN entity AS category
+          ON category.id = entity.parent_entity_id
+        WHERE entity.type <> 'category'
+        ORDER BY entity.name ASC
+      `,
+    );
+    return result.rows.map(mapEntityWithCategory);
+  }
+
+  async listValidAtomsForEntity(entityId: string): Promise<MemoryAtom[]> {
+    const result = await this.pool.query<AtomRow>(
+      `
+        SELECT *
+        FROM memory_atom
+        WHERE
+          entity_id = $1
+          AND (invalid_at IS NULL OR invalid_at > NOW())
+        ORDER BY importance DESC, created_at DESC
+      `,
+      [entityId],
+    );
+    return result.rows.map(mapAtom);
+  }
+
+  async listLifeStateAtoms(limit = 100): Promise<MemoryAtom[]> {
+    const result = await this.pool.query<AtomRow>(
+      `
+        SELECT *
+        FROM memory_atom
+        WHERE
+          invalid_at IS NULL
+          AND (decay_class IN ('profile', 'preference') OR importance >= 0.8)
+        ORDER BY importance DESC, created_at DESC
+        LIMIT $1
+      `,
+      [limit],
+    );
+    return result.rows.map(mapAtom);
+  }
+
+  async listRecentBridgeAtoms(since: Date | null, limit: number): Promise<MemoryAtom[]> {
+    const result = await this.pool.query<AtomRow>(
+      `
+        SELECT *
+        FROM memory_atom
+        WHERE
+          (invalid_at IS NULL OR invalid_at > NOW())
+          AND ($1::timestamptz IS NULL OR created_at > $1)
+        ORDER BY created_at DESC
+        LIMIT $2
+      `,
+      [since, limit],
+    );
+    return result.rows.map(mapAtom);
+  }
+
+  async searchValidAtomsLexical(text: string, limit: number): Promise<MemoryAtom[]> {
     const result = await this.pool.query<AtomRow>(
       `
         SELECT *
@@ -247,12 +332,25 @@ export class PostgresRepository implements Repository {
         WHERE
           content ILIKE '%' || $1 || '%'
           AND (invalid_at IS NULL OR invalid_at > NOW())
-        ORDER BY created_at DESC
+        ORDER BY importance DESC, created_at DESC
         LIMIT $2
       `,
-      [options.text, options.limit ?? 10],
+      [text, limit],
     );
     return result.rows.map(mapAtom);
+  }
+
+  async getLatestCompletedConsolidationAt(): Promise<Date | null> {
+    const result = await this.pool.query<{ completed_at: Date | null }>(
+      `
+        SELECT completed_at
+        FROM consolidation_run
+        WHERE status = 'completed'
+        ORDER BY completed_at DESC NULLS LAST
+        LIMIT 1
+      `,
+    );
+    return result.rows[0]?.completed_at ? new Date(result.rows[0].completed_at) : null;
   }
 
   async listAtomsForEntity(entityId: string): Promise<MemoryAtom[]> {
