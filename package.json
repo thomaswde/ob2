@@ -1,0 +1,31 @@
+{
+  "name": "ob2",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "ob": "tsx src/cli/index.ts",
+    "db:migrate": "tsx src/cli/index.ts db migrate",
+    "db:reset": "tsx src/cli/index.ts db reset --force",
+    "fixtures:load": "tsx src/cli/index.ts fixtures load fixtures/morgan.json",
+    "docker:up": "docker compose up -d postgres",
+    "docker:down": "docker compose down"
+  },
+  "dependencies": {
+    "pg": "^8.16.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.6.0",
+    "@types/pg": "^8.15.5",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}
