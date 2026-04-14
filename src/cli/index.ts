@@ -1,14 +1,24 @@
+import { ConsolidationService } from "../app/ConsolidationService.js";
 import path from "node:path";
 import { ProjectionRebuilder } from "../app/ProjectionRebuilder.js";
-import { captureMemory } from "../app/captureMemory.js";
 import { createLanguageModel } from "../app/llmFactory.js";
-import { MemoryQueryService } from "../app/MemoryQueryService.js";
+import { createRuntimeMemoryServices } from "../app/runtimeServices.js";
 import { loadFixtures } from "../app/fixtures.js";
 import { PostgresRepository } from "../adapters/postgres/PostgresRepository.js";
 import { closePool, getPool } from "../adapters/postgres/db.js";
 import { runMigrations } from "../adapters/postgres/migrations.js";
+import { startHttpApiServer } from "../transports/http/server.js";
+import { startMcpProxyServer } from "../transports/mcp/server.js";
 import type { CaptureMemoryInput, DecayClass } from "../domain/types.js";
-import { formatAtom, formatEntity, formatQueryResult } from "./format.js";
+import {
+  formatAutomationResult,
+  formatAtom,
+  formatConsolidationResult,
+  formatCorrectionAction,
+  formatEntity,
+  formatExportResult,
+  formatQueryResult,
+} from "./format.js";
 
 function getRepository(): PostgresRepository {
   return new PostgresRepository(getPool());
@@ -57,7 +67,6 @@ async function handleCapture(args: string[]): Promise<void> {
     throw new Error("capture requires content");
   }
 
-  const repository = getRepository();
   const now = new Date().toISOString();
   const input: CaptureMemoryInput = {
     content,
@@ -71,8 +80,13 @@ async function handleCapture(args: string[]): Promise<void> {
     invalidAt: readOption(args, "--invalid-at"),
   };
 
-  const atom = await captureMemory(repository, input);
-  console.log(formatAtom(atom));
+  const services = createRuntimeMemoryServices(process.cwd());
+  const result = await services.capture(input);
+  console.log(formatAtom(result.atom));
+  if (result.automation) {
+    console.log("");
+    console.log(formatAutomationResult(result.automation));
+  }
 }
 
 async function handleQuery(args: string[]): Promise<void> {
@@ -81,9 +95,8 @@ async function handleQuery(args: string[]): Promise<void> {
     throw new Error("query requires search text");
   }
 
-  const repository = getRepository();
-  const languageModel = createLanguageModel();
-  const result = await new MemoryQueryService(repository, languageModel).query(text);
+  const services = createRuntimeMemoryServices(process.cwd());
+  const result = await services.query(text);
   console.log(formatQueryResult(result));
 }
 
@@ -96,6 +109,112 @@ async function handleProject(args: string[]): Promise<void> {
   const repository = getRepository();
   const result = await new ProjectionRebuilder(repository).rebuild();
   console.log(`Projection rebuilt at ${result.outputPath} (${result.filesWritten} files).`);
+}
+
+async function handleConsolidate(args: string[]): Promise<void> {
+  const services = createRuntimeMemoryServices(process.cwd());
+
+  if (hasFlag(args, "--force-enable")) {
+    await services.forceEnableConsolidation();
+    console.log("Consolidation has been re-enabled.");
+    return;
+  }
+
+  const result = await services.consolidate();
+  console.log(formatConsolidationResult(result));
+}
+
+async function handleCorrections(args: string[]): Promise<void> {
+  const subcommand = args[0];
+  const repository = getRepository();
+  const service = new ConsolidationService(repository, createLanguageModel());
+
+  if (subcommand === "list") {
+    const corrections = await repository.listCorrectionActions();
+    for (const correction of corrections) {
+      console.log(formatCorrectionAction(correction));
+      console.log("");
+    }
+    return;
+  }
+
+  if (subcommand === "apply") {
+    const id = args[1];
+    if (!id) {
+      throw new Error("corrections apply requires an id");
+    }
+    await service.applyCorrection(id);
+    console.log(`Applied correction ${id}.`);
+    return;
+  }
+
+  if (subcommand === "propose") {
+    const targetAtomId = readOption(args, "--target") ?? null;
+    const reason = readOption(args, "--reason") ?? null;
+    const content = args
+      .filter((arg, index) => index > 0)
+      .filter((arg) => !["--target", targetAtomId ?? "", "--reason", reason ?? ""].includes(arg))
+      .join(" ")
+      .trim();
+    if (!content) {
+      throw new Error("corrections propose requires correction content");
+    }
+    const correction = await service.proposeCorrection(targetAtomId, content, reason ?? undefined);
+    console.log(formatCorrectionAction(correction));
+    return;
+  }
+
+  throw new Error(`Unknown corrections command: ${subcommand ?? "none"}`);
+}
+
+async function handleExport(): Promise<void> {
+  const services = createRuntimeMemoryServices(process.cwd());
+  const result = await services.exportData();
+  console.log(formatExportResult(result));
+}
+
+async function handleAutomation(args: string[]): Promise<void> {
+  const subcommand = args[0];
+  const services = createRuntimeMemoryServices(process.cwd());
+
+  if (subcommand === "scheduled") {
+    const result = await services.runScheduledAutomation();
+    console.log(formatAutomationResult(result));
+    return;
+  }
+
+  throw new Error(`Unknown automation command: ${subcommand ?? "none"}`);
+}
+
+async function handleApi(args: string[]): Promise<void> {
+  const subcommand = args[0];
+  if (subcommand !== "serve") {
+    throw new Error(`Unknown api command: ${subcommand ?? "none"}`);
+  }
+
+  const services = createRuntimeMemoryServices(process.cwd());
+  const server = await startHttpApiServer(services);
+  const address = server.address();
+  if (typeof address === "object" && address) {
+    console.log(`HTTP API listening on http://${address.address}:${address.port}`);
+  } else {
+    console.log("HTTP API listening.");
+  }
+  await new Promise<void>(() => {
+    // Keep the CLI process alive until interrupted.
+  });
+}
+
+async function handleMcp(args: string[]): Promise<void> {
+  const subcommand = args[0];
+  if (subcommand !== "serve") {
+    throw new Error(`Unknown mcp command: ${subcommand ?? "none"}`);
+  }
+
+  await startMcpProxyServer();
+  await new Promise<void>(() => {
+    // Keep the MCP shim alive until interrupted.
+  });
 }
 
 async function handleEntity(args: string[]): Promise<void> {
@@ -179,12 +298,36 @@ async function main(): Promise<void> {
       await handleProject(rest);
       return;
     }
+    if (command === "consolidate") {
+      await handleConsolidate(rest);
+      return;
+    }
+    if (command === "corrections") {
+      await handleCorrections(rest);
+      return;
+    }
     if (command === "fixtures") {
       await handleFixtures(rest);
       return;
     }
+    if (command === "export") {
+      await handleExport();
+      return;
+    }
+    if (command === "automation") {
+      await handleAutomation(rest);
+      return;
+    }
+    if (command === "api") {
+      await handleApi(rest);
+      return;
+    }
+    if (command === "mcp") {
+      await handleMcp(rest);
+      return;
+    }
 
-    console.log("Usage: ob <db|capture|query|entity|project|fixtures> ...");
+    console.log("Usage: ob <db|capture|query|entity|project|consolidate|corrections|fixtures|export|automation|api|mcp> ...");
   } finally {
     await closePool();
   }

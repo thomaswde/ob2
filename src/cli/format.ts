@@ -1,4 +1,13 @@
-import type { Entity, MemoryAtom, QueryMemoryResult } from "../domain/types.js";
+import type {
+  ConsolidationRun,
+  CorrectionAction,
+  Entity,
+  ExportResult,
+  MemoryAtom,
+  QueryMemoryResult,
+  ReviewItem,
+  AutomationTriggerResult,
+} from "../domain/types.js";
 
 export function formatAtom(atom: MemoryAtom): string {
   return [
@@ -65,4 +74,88 @@ export function formatQueryResult(result: QueryMemoryResult): string {
 
   lines.push("", `gates: ${result.reasoning.gatesUsed.join(", ")}`);
   return lines.join("\n");
+}
+
+export function formatConsolidationResult(result: {
+  runId: string;
+  status: string;
+  atomCount: number;
+  lowConfidenceCount: number;
+  errorCount: number;
+  outputPath: string | null;
+  reviewItemsCreated: number;
+  appliedCorrectionIds: string[];
+}): string {
+  return [
+    `runId: ${result.runId}`,
+    `status: ${result.status}`,
+    `atomCount: ${result.atomCount}`,
+    `lowConfidenceCount: ${result.lowConfidenceCount}`,
+    `errorCount: ${result.errorCount}`,
+    `reviewItemsCreated: ${result.reviewItemsCreated}`,
+    `appliedCorrections: ${result.appliedCorrectionIds.length}`,
+    `outputPath: ${result.outputPath ?? "none"}`,
+  ].join("\n");
+}
+
+export function formatConsolidationRun(run: ConsolidationRun): string {
+  return [
+    `id: ${run.id}`,
+    `status: ${run.status}`,
+    `atomCount: ${run.atomCount}`,
+    `processedAtomCount: ${run.processedAtomCount}`,
+    `lowConfidenceAtomCount: ${run.lowConfidenceAtomCount}`,
+    `errorCount: ${run.errorCount}`,
+    `startedAt: ${run.startedAt.toISOString()}`,
+    `completedAt: ${run.completedAt?.toISOString() ?? "pending"}`,
+    `notes: ${run.notes ?? ""}`,
+  ].join("\n");
+}
+
+export function formatCorrectionAction(action: CorrectionAction): string {
+  return [
+    `id: ${action.id}`,
+    `status: ${action.status}`,
+    `targetAtomId: ${action.targetAtomId ?? "none"}`,
+    `appliedAtomId: ${action.appliedAtomId ?? "none"}`,
+    `confidence: ${action.confidence ?? "n/a"}`,
+    `proposedContent: ${action.proposedContent}`,
+    `reason: ${action.reason ?? ""}`,
+  ].join("\n");
+}
+
+export function formatReviewItem(item: ReviewItem): string {
+  return [
+    `id: ${item.id}`,
+    `kind: ${item.kind}`,
+    `status: ${item.status}`,
+    `atomId: ${item.atomId ?? "none"}`,
+    `entityId: ${item.entityId ?? "none"}`,
+    `confidence: ${item.confidence ?? "n/a"}`,
+    `detail: ${item.detail}`,
+  ].join("\n");
+}
+
+export function formatExportResult(result: ExportResult): string {
+  return [
+    `outputPath: ${result.outputPath}`,
+    `generatedAt: ${result.manifest.generatedAt}`,
+    `schemaVersion: ${result.manifest.schemaVersion}`,
+    `entityCount: ${result.manifest.entityCount}`,
+    `atomCount: ${result.manifest.atomCount}`,
+  ].join("\n");
+}
+
+export function formatAutomationResult(result: AutomationTriggerResult | null): string {
+  if (!result) {
+    return "automation: not configured";
+  }
+
+  return [
+    `status: ${result.status}`,
+    `attempted: ${result.attempted ? "yes" : "no"}`,
+    `triggered: ${result.triggered ? "yes" : "no"}`,
+    `reason: ${result.reason}`,
+    `runId: ${result.runId ?? "none"}`,
+  ].join("\n");
 }
