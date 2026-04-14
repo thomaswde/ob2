@@ -2,6 +2,9 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 
 let loaded = false;
+const LLM_BACKENDS = ["stub", "anthropic-api", "anthropic-agent"] as const;
+
+export type LlmBackend = (typeof LLM_BACKENDS)[number];
 
 function loadDotEnv(): void {
   if (loaded) {
@@ -66,7 +69,7 @@ export function getAnthropicApiKey(): string | null {
   return process.env.ANTHROPIC_API_KEY ?? null;
 }
 
-export function getAnthropicModel(): string {
+function getAnthropicDefaultModel(): string {
   loadDotEnv();
   return process.env.ANTHROPIC_MODEL ?? "claude-3-5-sonnet-latest";
 }
@@ -74,6 +77,60 @@ export function getAnthropicModel(): string {
 export function shouldUseStubLlm(): boolean {
   loadDotEnv();
   return process.env.OB2_USE_STUB_LLM === "1";
+}
+
+function parseLlmBackend(value: string): LlmBackend {
+  if ((LLM_BACKENDS as readonly string[]).includes(value)) {
+    return value as LlmBackend;
+  }
+
+  throw new Error(
+    `OB2_LLM_BACKEND must be one of ${LLM_BACKENDS.join(", ")}, got ${JSON.stringify(value)}.`,
+  );
+}
+
+function isExplicitTestContext(): boolean {
+  return process.env.VITEST === "true" || process.env.NODE_ENV === "test";
+}
+
+export function getLlmBackend(): LlmBackend {
+  loadDotEnv();
+
+  const configuredBackend = process.env.OB2_LLM_BACKEND?.trim();
+  if (configuredBackend) {
+    return parseLlmBackend(configuredBackend);
+  }
+
+  if (shouldUseStubLlm()) {
+    return "stub";
+  }
+
+  if (getAnthropicApiKey()) {
+    return "anthropic-api";
+  }
+
+  if (isExplicitTestContext()) {
+    return "stub";
+  }
+
+  throw new Error(
+    "No LLM backend configured. Set OB2_LLM_BACKEND to stub, anthropic-api, or anthropic-agent.",
+  );
+}
+
+export function getLlmModel(backend: LlmBackend): string {
+  loadDotEnv();
+
+  const configuredModel = process.env.OB2_LLM_MODEL?.trim();
+  if (configuredModel) {
+    return configuredModel;
+  }
+
+  if (backend === "stub") {
+    return "stub";
+  }
+
+  return getAnthropicDefaultModel();
 }
 
 export function getApiHost(): string {
