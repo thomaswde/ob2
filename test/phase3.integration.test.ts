@@ -59,10 +59,32 @@ describe("Phase 3 consolidation", () => {
     const morganFile = await readFile(path.join(rootDir, "memory", "entities", "family", "morgan-chen.md"), "utf8");
 
     expect(result.status).toBe("completed");
-    expect(index).toContain("[Morgan Chen](entities/family/morgan-chen.md)");
-    expect(lifeState).toContain("[source:");
+    expect(index).toContain("[Morgan Chen](entities/family/morgan-chen.md?id=");
+    expect(lifeState).not.toContain("## ");
+    expect(lifeState.trim().length).toBeGreaterThan(0);
     expect(morganFile).toContain("[source:");
     expect((await repository.listPendingAtoms()).length).toBe(0);
+  });
+
+  it("falls back to concatenated life state when synthesis confidence is low", async () => {
+    const repository = await buildSeededRepository();
+    const rootDir = await makeRootDir("ob2-phase3-life-state-fallback-");
+    const service = new ConsolidationService(
+      repository,
+      new StubLanguageModel({
+        synthesizeLifeState: () => ({
+          narrative: "",
+          confidence: "low",
+        }),
+      }),
+      { rootDir },
+    );
+
+    await service.run();
+
+    const lifeState = await readFile(path.join(rootDir, "memory", "life_state.md"), "utf8");
+    expect(lifeState).toContain("## ");
+    expect(lifeState).toContain("[source:");
   });
 
   it("is effectively a no-op on an unchanged rerun", async () => {

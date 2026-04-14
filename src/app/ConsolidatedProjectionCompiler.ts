@@ -22,6 +22,11 @@ function yamlEscape(value: string): string {
   return JSON.stringify(value);
 }
 
+function buildIndexLine(entity: EntityWithCategory, summary: string): string {
+  const categorySlug = entity.categorySlug ?? "uncategorized";
+  return `- [${entity.name}](entities/${categorySlug}/${entity.slug}.md?id=${entity.id}) — ${summary}`;
+}
+
 function buildLifeState(groups: Map<string, MemoryAtom[]>): string {
   const sections: string[] = [];
   for (const [category, atoms] of [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
@@ -130,8 +135,7 @@ export class ConsolidatedProjectionCompiler {
     for (const entity of entities) {
       const atoms = await this.repository.listValidAtomsForEntity(entity.id);
       const summary = await this.writeEntityFile(this.tempDir, entity, atoms);
-      const categorySlug = entity.categorySlug ?? "uncategorized";
-      indexLines.push(`- [${entity.name}](entities/${categorySlug}/${entity.slug}.md) — ${summary}`);
+      indexLines.push(buildIndexLine(entity, summary));
       filesWritten += 1;
     }
 
@@ -148,7 +152,22 @@ export class ConsolidatedProjectionCompiler {
       lifeStateGroups.set(groupName, existing);
     }
 
-    await writeFile(path.join(this.tempDir, "life_state.md"), `${buildLifeState(lifeStateGroups)}\n`, "utf8");
+    const lifeStateInput = {
+      atomsByCategory: [...lifeStateGroups.entries()]
+        .sort((a, b) => a[0].localeCompare(b[0]))
+        .map(([categoryName, atoms]) => ({
+          categoryName,
+          atoms: formatSourceAtoms(atoms),
+        })),
+    };
+    const lifeStateSynthesis = await this.languageModel.synthesizeLifeState(lifeStateInput);
+    const fallbackLifeState = buildLifeState(lifeStateGroups);
+    const lifeStateContent =
+      lifeStateSynthesis.confidence === "high" && lifeStateSynthesis.narrative.trim().length > 0
+        ? lifeStateSynthesis.narrative.trim()
+        : fallbackLifeState;
+
+    await writeFile(path.join(this.tempDir, "life_state.md"), `${lifeStateContent}\n`, "utf8");
     filesWritten += 1;
 
     const backupDir = `${this.memoryDir}.bak`;
