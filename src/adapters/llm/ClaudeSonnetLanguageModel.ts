@@ -6,6 +6,8 @@ import type {
   EntitySelectionResult,
   EntitySummarySynthesisInput,
   EntitySummarySynthesisResult,
+  LifeStateSynthesisInput,
+  LifeStateSynthesisResult,
   LanguageModel,
 } from "../../domain/languageModel.js";
 import type { ExtractSchema, QueryClassifierDecision, QuerySchema } from "../../domain/types.js";
@@ -98,7 +100,14 @@ export class ClaudeSonnetLanguageModel implements LanguageModel {
 
   async extract(prompt: string, _schema: ExtractSchema): Promise<EntitySelectionResult> {
     return this.invokeJson<EntitySelectionResult>(
-      "Select relevant entity slugs from the provided markdown index. Return JSON: {\"slugs\": string[], \"confidence\": \"high\"|\"low\"}.",
+      `You are a memory oracle for a personal AI assistant. Given a user query and their current life state, identify which entities in the index are relevant, including non-obvious lateral connections the user did not explicitly mention.
+
+Think in two passes:
+1. Direct: entities the query obviously concerns.
+2. Lateral: entities that are relevant given the user's current situation, goals, or constraints, even if unmentioned.
+
+Return JSON: {"slugs": string[], "confidence": "high"|"low"}.
+confidence is "low" if the query is ambiguous or the index lacks sufficient context.`,
       prompt,
     );
   }
@@ -126,6 +135,14 @@ export class ClaudeSonnetLanguageModel implements LanguageModel {
       "You are synthesizing an entity summary from source atoms. Return JSON with keys: summary (string), claims (array of {text, sourceAtomIds}), confidence ('high'|'low'). The summary must include inline citations in the form [source: atom_id] for every factual claim. Preserve only claims supported by the provided atoms.",
       JSON.stringify(input, null, 2),
       800,
+    );
+  }
+
+  async synthesizeLifeState(input: LifeStateSynthesisInput): Promise<LifeStateSynthesisResult> {
+    return this.invokeJson<LifeStateSynthesisResult>(
+      "You are synthesizing a compressed life-state narrative for a personal AI memory system. Given atoms from multiple life domains, produce a short prose paragraph under 150 words describing the user's current situation: active goals, recent changes, standing constraints, and ongoing projects. Write from facts only with no speculation. Integrate cross-domain connections where they exist. Return JSON: {\"narrative\": string, \"confidence\": \"high\"|\"low\"}.",
+      JSON.stringify(input, null, 2),
+      600,
     );
   }
 }

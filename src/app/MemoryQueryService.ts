@@ -34,21 +34,29 @@ function trimStringToTokens(value: string, maxTokens: number): string {
   return `${value.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
 }
 
-function parseIndexEntries(indexContent: string): Map<string, { slug: string; summary: string; categorySlug: string }> {
-  const result = new Map<string, { slug: string; summary: string; categorySlug: string }>();
+interface IndexEntry {
+  slug: string;
+  summary: string;
+  categorySlug: string;
+  entityId: string | null;
+}
+
+function parseIndexEntries(indexContent: string): Map<string, IndexEntry> {
+  const result = new Map<string, IndexEntry>();
   for (const line of indexContent.split("\n")) {
-    const match = line.match(/- \[[^\]]+\]\(entities\/(.+?)\/(.+?)\.md\) — (.*)$/);
+    const match = line.match(/- \[[^\]]+\]\(entities\/(.+?)\/(.+?)\.md(?:\?id=([^)]+))?\) — (.*)$/);
     if (!match) {
       continue;
     }
 
     const categorySlug = match[1] ?? "";
     const slug = match[2] ?? "";
-    const summary = match[3] ?? "";
+    const entityId = match[3] ?? null;
+    const summary = match[4] ?? "";
     if (!categorySlug || !slug) {
       continue;
     }
-    result.set(slug, { slug, summary, categorySlug });
+    result.set(slug, { slug, summary, categorySlug, entityId });
   }
   return result;
 }
@@ -108,6 +116,15 @@ export class MemoryQueryService {
     };
   }
 
+  private async loadEntityResult(entry: IndexEntry): Promise<QueryEntityResult> {
+    const content = await this.readCached(path.join(this.memoryDir, "entities", entry.categorySlug, `${entry.slug}.md`));
+    return {
+      slug: entry.slug,
+      summary: entry.summary,
+      content,
+    };
+  }
+
   private trimResult(result: QueryMemoryResult): QueryMemoryResult {
     const clone: QueryMemoryResult = {
       ...result,
@@ -117,6 +134,7 @@ export class MemoryQueryService {
       reasoning: {
         ...result.reasoning,
         gatesUsed: [...result.reasoning.gatesUsed],
+        gate4LinkedSlugs: result.reasoning.gate4LinkedSlugs ? [...result.reasoning.gate4LinkedSlugs] : undefined,
       },
     };
 
@@ -141,22 +159,30 @@ export class MemoryQueryService {
         continue;
       }
 
-      if (clone.entities.length > 0) {
-        const lastEntity = clone.entities[clone.entities.length - 1];
-        if (!lastEntity) {
-          clone.entities.pop();
-          continue;
-        }
-        if (estimateTokens(lastEntity.content) > 40) {
-          lastEntity.content = trimStringToTokens(lastEntity.content, estimateTokens(lastEntity.content) - 40);
-          continue;
-        }
-        clone.entities.pop();
+      if (clone.lifeState.length > 0) {
+        clone.lifeState = trimStringToTokens(clone.lifeState, Math.max(40, estimateTokens(clone.lifeState) - 80));
         continue;
       }
 
-      if (clone.lifeState.length > 0) {
-        clone.lifeState = trimStringToTokens(clone.lifeState, Math.max(40, estimateTokens(clone.lifeState) - 80));
+      if (clone.entities.length > 0) {
+        const entityToTrim = [...clone.entities]
+          .sort(
+            (a, b) =>
+              estimateTokens(b.content) + estimateTokens(b.summary) - (estimateTokens(a.content) + estimateTokens(a.summary)),
+          )[0];
+        if (!entityToTrim) {
+          clone.entities.pop();
+          continue;
+        }
+        if (estimateTokens(entityToTrim.content) > 20) {
+          entityToTrim.content = trimStringToTokens(entityToTrim.content, estimateTokens(entityToTrim.content) - 20);
+          continue;
+        }
+        if (estimateTokens(entityToTrim.summary) > 10) {
+          entityToTrim.summary = trimStringToTokens(entityToTrim.summary, estimateTokens(entityToTrim.summary) - 10);
+          continue;
+        }
+        clone.entities.pop();
         continue;
       }
 
@@ -201,17 +227,77 @@ export class MemoryQueryService {
     });
     const indexEntries = parseIndexEntries(indexContent);
     const gate2 = await timeStep("gate2", async () =>
-      this.languageModel.extract(`Query: ${text}\nIndex:\n${indexContent}`, { type: "entity-selection" }),
+      this.languageModel.extract(
+        `Query: ${text}\n\nUser current state:\n${lifeState}\n\nEntity index:\n${indexContent}`,
+        { type: "entity-selection" },
+      ),
     );
     const entities: QueryEntityResult[] = [];
+    const seenSlugs = new Set<string>();
 
     for (const slug of new Set(gate2.slugs)) {
       const entry = indexEntries.get(slug);
       if (!entry) {
         continue;
       }
-      const content = await this.readCached(path.join(this.memoryDir, "entities", entry.categorySlug, `${slug}.md`));
-      entities.push({ slug, summary: entry.summary, content });
+      seenSlugs.add(slug);
+      entities.push(await this.loadEntityResult(entry));
+    }
+
+    const gate4LinkedSlugs: string[] = [];
+    if (gate2.confidence === "high" && entities.length > 0) {
+      const linkedEntries = await timeStep("gate4", async () => {
+        const linked: IndexEntry[] = [];
+        const entryByEntityId = new Map(
+          [...indexEntries.values()]
+            .filter((entry) => entry.entityId)
+            .map((entry) => [entry.entityId as string, entry]),
+        );
+
+        for (const slug of [...seenSlugs]) {
+          const entry = indexEntries.get(slug);
+          if (!entry) {
+            continue;
+          }
+
+          const entity =
+            (entry.entityId ? await this.repository.getEntityById(entry.entityId) : null) ??
+            (await this.repository.getEntityBySlug(entry.slug));
+          if (!entity) {
+            continue;
+          }
+
+          const links = await this.repository.listEntityLinksForEntity(entity.id);
+          for (const link of links) {
+            if ((link.confidence ?? 0) < 0.75) {
+              continue;
+            }
+
+            const relatedEntityId = link.entityId === entity.id ? link.relatedEntityId : link.entityId;
+            const relatedEntry = entryByEntityId.get(relatedEntityId);
+            if (!relatedEntry || seenSlugs.has(relatedEntry.slug)) {
+              continue;
+            }
+
+            seenSlugs.add(relatedEntry.slug);
+            gate4LinkedSlugs.push(relatedEntry.slug);
+            linked.push(relatedEntry);
+
+            if (gate4LinkedSlugs.length >= 3) {
+              return linked;
+            }
+          }
+        }
+
+        return linked;
+      });
+
+      if (linkedEntries.length > 0) {
+        gatesUsed.push("gate4");
+        for (const entry of linkedEntries) {
+          entities.push(await this.loadEntityResult(entry));
+        }
+      }
     }
 
     let fallbackAtoms: MemoryAtom[] | null = null;
@@ -229,6 +315,7 @@ export class MemoryQueryService {
         gatesUsed,
         classifierDecision,
         gate2Confidence: gate2.confidence,
+        gate4LinkedSlugs: gate4LinkedSlugs.length > 0 ? gate4LinkedSlugs : undefined,
         gateTimingsMs,
         totalDurationMs: Date.now() - queryStartedAt,
       },

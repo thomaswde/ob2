@@ -81,6 +81,18 @@ export interface EntitySummarySynthesisResult {
   confidence: "high" | "low";
 }
 
+export interface LifeStateSynthesisInput {
+  atomsByCategory: Array<{
+    categoryName: string;
+    atoms: EntitySummarySourceAtom[];
+  }>;
+}
+
+export interface LifeStateSynthesisResult {
+  narrative: string;
+  confidence: "high" | "low";
+}
+
 export interface LanguageModel {
   classify(prompt: string, schema: QuerySchema): Promise<QueryClassifierDecision>;
   summarize(prompt: string): Promise<string>;
@@ -88,4 +100,5 @@ export interface LanguageModel {
   classifyConsolidation(input: ConsolidationClassificationInput): Promise<ConsolidationClassificationResult>;
   decideConsolidation(input: ConsolidationDecisionInput): Promise<ConsolidationDecisionResult>;
   synthesizeEntitySummary(input: EntitySummarySynthesisInput): Promise<EntitySummarySynthesisResult>;
+  synthesizeLifeState(input: LifeStateSynthesisInput): Promise<LifeStateSynthesisResult>;
 }

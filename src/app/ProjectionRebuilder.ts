@@ -22,6 +22,11 @@ function yamlEscape(value: string): string {
   return JSON.stringify(value);
 }
 
+function buildIndexLine(entity: EntityWithCategory, summary: string): string {
+  const categorySlug = entity.categorySlug ?? "uncategorized";
+  return `- [${entity.name}](entities/${categorySlug}/${entity.slug}.md?id=${entity.id}) — ${summary}`;
+}
+
 function buildEntitySummary(atoms: MemoryAtom[]): string {
   const content = atoms.map((atom) => normalizeContent(atom.content)).join(" ");
   return truncate(content.replace(/\s+/g, " ").trim(), 100);
@@ -108,8 +113,7 @@ export class ProjectionRebuilder {
     for (const entity of entities) {
       const atoms = await this.repository.listValidAtomsForEntity(entity.id);
       const summary = buildEntitySummary(atoms);
-      const categorySlug = entity.categorySlug ?? "uncategorized";
-      indexLines.push(`- [${entity.name}](entities/${categorySlug}/${entity.slug}.md) — ${summary}`);
+      indexLines.push(buildIndexLine(entity, summary));
       await this.writeEntityFile(this.tempDir, entity, atoms);
       filesWritten += 1;
     }

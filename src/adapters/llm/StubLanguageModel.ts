@@ -6,6 +6,8 @@ import type {
   EntitySelectionResult,
   EntitySummarySynthesisInput,
   EntitySummarySynthesisResult,
+  LifeStateSynthesisInput,
+  LifeStateSynthesisResult,
   LanguageModel,
 } from "../../domain/languageModel.js";
 import type { ExtractSchema, QueryClassifierDecision, QuerySchema } from "../../domain/types.js";
@@ -39,6 +41,7 @@ export interface StubLanguageModelOptions {
   synthesizeEntitySummary?: (
     input: EntitySummarySynthesisInput,
   ) => EntitySummarySynthesisResult;
+  synthesizeLifeState?: (input: LifeStateSynthesisInput) => LifeStateSynthesisResult;
 }
 
 function summarizeContent(content: string, limit = 120): string {
@@ -112,7 +115,7 @@ export class StubLanguageModel implements LanguageModel {
     const lines = prompt.split("\n").filter((line) => line.startsWith("- ["));
     const scored = lines
       .map((line) => {
-        const match = line.match(/- \[(.+?)\]\(entities\/(.+?)\/(.+?)\.md\) — (.*)$/);
+        const match = line.match(/- \[(.+?)\]\(entities\/(.+?)\/(.+?)\.md(?:\?id=[^)]+)?\) — (.*)$/);
         if (!match) {
           return null;
         }
@@ -257,5 +260,30 @@ export class StubLanguageModel implements LanguageModel {
     }
 
     return base;
+  }
+
+  async synthesizeLifeState(input: LifeStateSynthesisInput): Promise<LifeStateSynthesisResult> {
+    const override = this.options.synthesizeLifeState;
+    if (override) {
+      return override(input);
+    }
+
+    const categories = input.atomsByCategory.filter((group) => group.atoms.length > 0);
+    if (categories.length === 0) {
+      return {
+        narrative: "",
+        confidence: "low",
+      };
+    }
+
+    const parts = categories.slice(0, 4).map((group) => {
+      const atom = group.atoms[0];
+      return `${group.categoryName}: ${summarizeContent(atom?.content ?? "", 60)}`;
+    });
+
+    return {
+      narrative: parts.join(". "),
+      confidence: "high",
+    };
   }
 }

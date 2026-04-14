@@ -49,7 +49,7 @@ describe("Phase 2 services", () => {
 
     expect(firstIndex).toBe(secondIndex);
     expect(firstLifeState).toBe(secondLifeState);
-    expect(firstIndex).toContain("[BMW R75/5](entities/vehicles/bmw-r75-5.md)");
+    expect(firstIndex).toContain("[BMW R75/5](entities/vehicles/bmw-r75-5.md?id=");
     expect(bmwFile).toContain("[source:");
   });
 
@@ -98,6 +98,140 @@ describe("Phase 2 services", () => {
     expect(result.entities.some((entity) => entity.slug === "subaru-outback")).toBe(true);
     expect(result.reasoning.gatesUsed.includes("gate3")).toBe(false);
     expect(result.reasoning.gate2Confidence).toBe("high");
+  });
+
+  it("passes life state context into Gate 2 selection", async () => {
+    let capturedPrompt = "";
+    const promptAwareService = new MemoryQueryService(
+      repository,
+      new StubLanguageModel({
+        extract: (prompt) => {
+          capturedPrompt = prompt;
+          return {
+            slugs: ["morgan-chen"],
+            confidence: "high",
+          };
+        },
+      }),
+      rootDir,
+    );
+
+    await promptAwareService.query("let's plan my spring schedule");
+
+    const expectedLifeState = await readFile(path.join(rootDir, "memory", "life_state.md"), "utf8");
+    expect(capturedPrompt).toContain("User current state:");
+    expect(capturedPrompt).toContain(expectedLifeState.trim());
+  });
+
+  it("traverses high-confidence entity links through Gate 4", async () => {
+    const morgan = await repository.getEntityByName("Morgan Chen");
+    const extrahop = await repository.getEntityByName("ExtraHop");
+    expect(morgan).toBeTruthy();
+    expect(extrahop).toBeTruthy();
+
+    await repository.createEntityLink({
+      id: makeId(),
+      entityId: morgan!.id,
+      relatedEntityId: extrahop!.id,
+      relationshipType: "related_to",
+      confidence: 0.95,
+    });
+    await new ProjectionRebuilder(repository, rootDir).rebuild();
+
+    const result = await new MemoryQueryService(
+      repository,
+      new StubLanguageModel({
+        extract: () => ({
+          slugs: ["morgan-chen"],
+          confidence: "high",
+        }),
+      }),
+      rootDir,
+    ).query("where do I work");
+
+    expect(result.reasoning.gatesUsed).toContain("gate4");
+    expect(result.reasoning.gate4LinkedSlugs).toContain("extrahop");
+    expect(result.entities.some((entity) => entity.slug === "extrahop")).toBe(true);
+  });
+
+  it("caps Gate 4 traversal at three linked entities", async () => {
+    const family = await repository.getEntityByName("family");
+    const morgan = await repository.getEntityByName("Morgan Chen");
+    expect(family).toBeTruthy();
+    expect(morgan).toBeTruthy();
+
+    const linkedSlugs: string[] = [];
+    for (let index = 0; index < 4; index += 1) {
+      const name = `Linked Person ${index}`;
+      const entity = await repository.createEntity({
+        id: makeId(),
+        name,
+        slug: slugify(name),
+        type: "person",
+        parentEntityId: family!.id,
+      });
+      linkedSlugs.push(entity.slug);
+      await captureMemory(repository, {
+        content: `${name} helps with spring schedule planning.`,
+        sourceRef: `phase2:gate4:${index}`,
+        entityHint: name,
+        importance: 0.7,
+        decayClass: "profile",
+      });
+      await repository.createEntityLink({
+        id: makeId(),
+        entityId: morgan!.id,
+        relatedEntityId: entity.id,
+        relationshipType: "related_to",
+        confidence: 0.95,
+      });
+    }
+    await new ProjectionRebuilder(repository, rootDir).rebuild();
+
+    const result = await new MemoryQueryService(
+      repository,
+      new StubLanguageModel({
+        extract: () => ({
+          slugs: ["morgan-chen"],
+          confidence: "high",
+        }),
+      }),
+      rootDir,
+    ).query("help me reason about Morgan");
+
+    expect(result.reasoning.gate4LinkedSlugs).toHaveLength(3);
+    expect(new Set(result.reasoning.gate4LinkedSlugs).size).toBe(3);
+    expect(result.entities.filter((entity) => linkedSlugs.includes(entity.slug)).length).toBeGreaterThan(0);
+  });
+
+  it("does not fire Gate 4 when Gate 2 confidence is low", async () => {
+    const morgan = await repository.getEntityByName("Morgan Chen");
+    const extrahop = await repository.getEntityByName("ExtraHop");
+    expect(morgan).toBeTruthy();
+    expect(extrahop).toBeTruthy();
+
+    await repository.createEntityLink({
+      id: makeId(),
+      entityId: morgan!.id,
+      relatedEntityId: extrahop!.id,
+      relationshipType: "related_to",
+      confidence: 0.95,
+    });
+    await new ProjectionRebuilder(repository, rootDir).rebuild();
+
+    const result = await new MemoryQueryService(
+      repository,
+      new StubLanguageModel({
+        extract: () => ({
+          slugs: ["morgan-chen"],
+          confidence: "low",
+        }),
+      }),
+      rootDir,
+    ).query("ambiguous work question");
+
+    expect(result.reasoning.gatesUsed).not.toContain("gate4");
+    expect(result.reasoning.gate4LinkedSlugs).toBeUndefined();
   });
 
   it("uses Gate 3 trigram-style fallback for weaker lexical cues", async () => {
