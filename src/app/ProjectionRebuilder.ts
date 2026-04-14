@@ -14,21 +14,25 @@ function truncate(value: string, maxLength: number): string {
   return `${value.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
 }
 
+function normalizeContent(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
+
 function yamlEscape(value: string): string {
   return JSON.stringify(value);
 }
 
 function buildEntitySummary(atoms: MemoryAtom[]): string {
-  const content = atoms.map((atom) => atom.content).join(" ");
+  const content = atoms.map((atom) => normalizeContent(atom.content)).join(" ");
   return truncate(content.replace(/\s+/g, " ").trim(), 100);
 }
 
 function buildLifeState(groups: Map<string, MemoryAtom[]>): string {
   const sections: string[] = [];
-  for (const [category, atoms] of [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+  for (const [category, atoms] of [...groups.entries()].sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))) {
     sections.push(`## ${category}`);
     for (const atom of atoms) {
-      sections.push(`- ${atom.content}`);
+      sections.push(`- ${normalizeContent(atom.content)}`);
     }
     sections.push("");
   }
@@ -80,7 +84,7 @@ export class ProjectionRebuilder {
       `entity_id: ${yamlEscape(entity.id)}`,
       "---",
       "",
-      ...atoms.map((atom) => `- ${atom.content} [source: ${atom.id}]`),
+      ...atoms.map((atom) => `- ${normalizeContent(atom.content)} [source: ${atom.id}]`),
       "",
     ].join("\n");
     await writeFile(path.join(entityDir, `${entity.slug}.md`), content, "utf8");

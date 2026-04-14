@@ -232,7 +232,12 @@ describe("Phase 3 consolidation", () => {
 
     await expect(service.run()).rejects.toThrow("simulated compile interruption");
     const secondIndex = await readFile(path.join(rootDir, "memory", "index.md"), "utf8");
+    const runs = await repository.listConsolidationRuns();
+    const state = await repository.getSystemState();
     expect(firstIndex).toBe(secondIndex);
+    expect(runs[0]?.status).toBe("aborted");
+    expect(runs[0]?.errorMessage).toContain("simulated compile interruption");
+    expect(state.consecutiveAbortedRuns).toBe(1);
   });
 
   it("applies obvious corrections as superseding atoms during consolidation", async () => {
@@ -261,5 +266,51 @@ describe("Phase 3 consolidation", () => {
     expect(corrections[0]?.status).toBe("applied");
     expect(atoms.some((atom) => atom.content.includes("ExtraHop"))).toBe(true);
     expect(atoms.find((atom) => atom.content.includes("NetApp"))?.invalidAt).toBeTruthy();
+  });
+
+  it("recovers a partially applied correction without creating a duplicate on rerun", async () => {
+    const repository = await seedMinimalEmploymentRepository();
+    const rootDir = await makeRootDir("ob2-phase3-correction-retry-");
+    const service = new ConsolidationService(repository, new StubLanguageModel({ scenario: "supersession" }), {
+      rootDir,
+    });
+
+    const original = await captureMemory(repository, {
+      content: "Morgan Chen works as a software architect at NetApp.",
+      sourceRef: "phase3:correction-retry:1",
+      entityHint: "Morgan Chen",
+      importance: 0.95,
+      decayClass: "profile",
+    });
+    await service.run();
+
+    const correction = await service.proposeCorrection(
+      original.id,
+      "Morgan Chen works as a software architect at ExtraHop.",
+      "Employer changed.",
+    );
+
+    const originalUpdateCorrectionActionStatus = repository.updateCorrectionActionStatus.bind(repository);
+    let failOnce = true;
+    repository.updateCorrectionActionStatus = async (id, status) => {
+      if (status === "applied" && failOnce) {
+        failOnce = false;
+        throw new Error("simulated correction finalization failure");
+      }
+      return originalUpdateCorrectionActionStatus(id, status);
+    };
+
+    await expect(service.run()).rejects.toThrow("simulated correction finalization failure");
+    const retryResult = await service.run();
+    const morgan = await repository.getEntityByName("Morgan Chen");
+    const atoms = await repository.listAtomsForEntity(morgan!.id);
+    const appliedAtoms = atoms.filter((atom) => atom.sourceRef === `correction:${correction.id}`);
+    const corrections = await repository.listCorrectionActions();
+
+    expect(retryResult.appliedCorrectionIds).toContain(correction.id);
+    expect(corrections.find((item) => item.id === correction.id)?.status).toBe("applied");
+    expect(appliedAtoms).toHaveLength(1);
+    expect(atoms.find((atom) => atom.content.includes("NetApp"))?.invalidAt).toBeTruthy();
+    expect(atoms.find((atom) => atom.content.includes("ExtraHop"))?.supersedesId).toBe(original.id);
   });
 });

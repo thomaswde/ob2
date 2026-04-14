@@ -25,6 +25,7 @@ export async function runMigrations(): Promise<string[]> {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+    await client.query("SELECT pg_advisory_xact_lock(hashtext('ob2_schema_migrations'))");
     await ensureMigrationTable(client);
 
     const appliedRows = await client.query<{ version: string }>(

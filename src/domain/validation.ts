@@ -3,9 +3,43 @@ import { DECAY_CLASSES, type CaptureMemoryInput } from "./types.js";
 
 export class ValidationError extends Error {}
 
-function parseTimestamp(value: string | Date | null | undefined, fieldName: string): Date | null {
-  if (value === undefined || value === null || value === "") {
+function assertString(value: unknown, fieldName: string): string {
+  if (typeof value !== "string") {
+    throw new ValidationError(`${fieldName} must be a string`);
+  }
+
+  return value.trim();
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function parseOptionalString(value: unknown, fieldName: string): string | null {
+  if (value === undefined || value === null) {
     return null;
+  }
+
+  const trimmed = assertString(value, fieldName);
+  return trimmed || null;
+}
+
+function parseTimestamp(value: unknown, fieldName: string): Date | null {
+  if (value === undefined || value === null) {
+    return null;
+  }
+
+  if (value === "") {
+    throw new ValidationError(`${fieldName} must be a valid timestamp`);
+  }
+
+  if (!(value instanceof Date) && typeof value !== "string") {
+    throw new ValidationError(`${fieldName} must be a valid timestamp`);
   }
 
   const parsed = value instanceof Date ? value : new Date(value);
@@ -36,10 +70,10 @@ export interface ValidatedCaptureMemoryInput {
 }
 
 export function validateCaptureMemoryInput(input: CaptureMemoryInput): ValidatedCaptureMemoryInput {
-  const content = input.content.trim();
-  const sourceRef = input.sourceRef.trim();
-  const entityHint = input.entityHint?.trim() || null;
-  const sourceAgent = input.sourceAgent?.trim() || null;
+  const content = assertString(input.content, "content");
+  const sourceRef = assertString(input.sourceRef, "sourceRef");
+  const entityHint = parseOptionalString(input.entityHint, "entityHint");
+  const sourceAgent = parseOptionalString(input.sourceAgent, "sourceAgent");
   const confidence = input.confidence ?? DEFAULT_CONFIDENCE;
 
   if (!content) {
@@ -57,6 +91,11 @@ export function validateCaptureMemoryInput(input: CaptureMemoryInput): Validated
 
   const validAt = parseTimestamp(input.validAt, "validAt");
   const invalidAt = parseTimestamp(input.invalidAt, "invalidAt");
+  const metadata = input.metadata ?? {};
+
+  if (!isPlainObject(metadata)) {
+    throw new ValidationError("metadata must be an object");
+  }
 
   if (validAt && invalidAt && invalidAt <= validAt) {
     throw new ValidationError("invalidAt must be later than validAt");
@@ -72,6 +111,6 @@ export function validateCaptureMemoryInput(input: CaptureMemoryInput): Validated
     decayClass: input.decayClass,
     validAt,
     invalidAt,
-    metadata: input.metadata ?? {},
+    metadata,
   };
 }

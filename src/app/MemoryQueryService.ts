@@ -16,6 +16,7 @@ import type {
 
 interface CachedFile {
   mtimeMs: number;
+  size: number;
   content: string;
 }
 
@@ -41,10 +42,10 @@ function parseIndexEntries(indexContent: string): Map<string, { slug: string; su
       continue;
     }
 
-    const categorySlug = match[1];
-    const slug = match[2];
-    const summary = match[3];
-    if (!categorySlug || !slug || !summary) {
+    const categorySlug = match[1] ?? "";
+    const slug = match[2] ?? "";
+    const summary = match[3] ?? "";
+    if (!categorySlug || !slug) {
       continue;
     }
     result.set(slug, { slug, summary, categorySlug });
@@ -66,15 +67,29 @@ export class MemoryQueryService {
   }
 
   private async readCached(filePath: string): Promise<string> {
-    const fileStat = await stat(filePath);
     const cached = this.cache.get(filePath);
-    if (cached && cached.mtimeMs === fileStat.mtimeMs) {
-      return cached.content;
-    }
+    try {
+      const fileStat = await stat(filePath);
+      if (cached && cached.mtimeMs === fileStat.mtimeMs && cached.size === fileStat.size) {
+        return cached.content;
+      }
 
-    const content = await readFile(filePath, "utf8");
-    this.cache.set(filePath, { mtimeMs: fileStat.mtimeMs, content });
-    return content;
+      const content = await readFile(filePath, "utf8");
+      this.cache.set(filePath, { mtimeMs: fileStat.mtimeMs, size: fileStat.size, content });
+      return content;
+    } catch (error) {
+      if (cached && this.isMissingFileError(error)) {
+        return cached.content;
+      }
+      if (this.isMissingFileError(error)) {
+        return "";
+      }
+      throw error;
+    }
+  }
+
+  private isMissingFileError(error: unknown): boolean {
+    return typeof error === "object" && error !== null && "code" in error && (error as { code?: string }).code === "ENOENT";
   }
 
   private buildEmptyResult(needsMemory: boolean, reason: string): QueryMemoryResult {
@@ -190,7 +205,7 @@ export class MemoryQueryService {
     );
     const entities: QueryEntityResult[] = [];
 
-    for (const slug of gate2.slugs) {
+    for (const slug of new Set(gate2.slugs)) {
       const entry = indexEntries.get(slug);
       if (!entry) {
         continue;

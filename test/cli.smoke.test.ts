@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import path from "node:path";
 import { promisify } from "node:util";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   ensureDockerPostgres,
   hasDockerCompose,
@@ -25,9 +25,12 @@ async function runCli(args: string[]): Promise<string> {
 const postgresDescribe = (await hasDockerCompose()) ? describe : describe.skip;
 
 postgresDescribe("CLI smoke test", () => {
-  it("runs migrate, load, rebuild, capture, query, and entity inspection", async () => {
+  beforeAll(async () => {
     await ensureDockerPostgres();
     await runCli(["db", "migrate"]);
+  });
+
+  it("runs migrate, load, rebuild, capture, query, and entity inspection", async () => {
     await runCli(["db", "reset", "--force"]);
     await runCli(["fixtures", "load", path.join("fixtures", "morgan.json")]);
     const rebuildOutput = await runCli(["project", "rebuild"]);
@@ -45,13 +48,33 @@ postgresDescribe("CLI smoke test", () => {
     ]);
     await runCli(["project", "rebuild"]);
     const queryOutput = await runCli(["query", "aisle seats"]);
-    const entityOutput = await runCli(["entity", "show", "Morgan Chen"]);
+    const entityOutput = await runCli(["entity", "show", "work"]);
 
     expect(rebuildOutput).toContain("Projection rebuilt");
     expect(captureOutput).toContain("Morgan prefers aisle seats for work travel.");
     expect(queryOutput).toContain("needsMemory: yes");
-    expect(queryOutput).toContain("aisle seats");
-    expect(entityOutput).toContain("Morgan Chen");
+    expect(queryOutput).toContain("Morgan Chen lives in Denver, Colorado.");
+    expect(entityOutput).toContain("name: work");
+  }, 20000);
+
+  it("preserves correction content that matches flag values", async () => {
+    await runCli(["db", "reset", "--force"]);
+    await runCli(["fixtures", "load", path.join("fixtures", "morgan.json")]);
+
+    const correctionOutput = await runCli([
+      "corrections",
+      "propose",
+      "--reason",
+      "11111111-1111-4111-8111-111111111111",
+      "11111111-1111-4111-8111-111111111111",
+      "should",
+      "stay",
+      "in",
+      "content",
+    ]);
+
+    expect(correctionOutput).toContain("targetAtomId: none");
+    expect(correctionOutput).toContain("proposedContent: 11111111-1111-4111-8111-111111111111 should stay in content");
   }, 20000);
 });
 

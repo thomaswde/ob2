@@ -60,6 +60,23 @@ describe("Phase 2 services", () => {
     expect(result.recent).toHaveLength(0);
   });
 
+  it("retrieves entities even when the projected summary is empty", async () => {
+    const work = await repository.getEntityByName("work");
+    expect(work).toBeTruthy();
+
+    await repository.createEntity({
+      id: makeId(),
+      name: "Empty Archive",
+      slug: slugify("Empty Archive"),
+      type: "other",
+      parentEntityId: work!.id,
+    });
+    await new ProjectionRebuilder(repository, rootDir).rebuild();
+
+    const result = await queryService.query("tell me about Empty Archive");
+    expect(result.entities.some((entity) => entity.slug === "empty-archive")).toBe(true);
+  });
+
   it("surfaces just-captured atoms through the recency bridge", async () => {
     await captureMemory(repository, {
       content: "Morgan prefers aisle seats for work travel.",
@@ -91,6 +108,24 @@ describe("Phase 2 services", () => {
     expect(result.fallbackAtoms?.some((atom) => atom.content.includes("BMW R75/5 motorcycle"))).toBe(true);
   });
 
+  it("deduplicates repeated gate 2 entity selections", async () => {
+    const duplicateSelectionService = new MemoryQueryService(
+      repository,
+      new StubLanguageModel({
+        extract: () => ({
+          slugs: ["bmw-r75-5", "bmw-r75-5"],
+          confidence: "high",
+        }),
+      }),
+      rootDir,
+    );
+
+    const result = await duplicateSelectionService.query("what vehicles do I own");
+
+    expect(result.entities).toHaveLength(1);
+    expect(result.entities[0]?.slug).toBe("bmw-r75-5");
+  });
+
   it("trims oversized query bundles to stay within the hard cap", async () => {
     for (let index = 0; index < 15; index += 1) {
       await captureMemory(repository, {
@@ -108,6 +143,34 @@ describe("Phase 2 services", () => {
     expect(bundleChars(result)).toBeLessThanOrEqual(QUERY_HARD_CAP_TOKENS * 4);
     expect(result.reasoning.totalDurationMs).toBeTypeOf("number");
     expect(result.reasoning.gateTimingsMs?.gate0).toBeTypeOf("number");
+  });
+
+  it("falls back to cached life state content if the file disappears between queries", async () => {
+    const first = await queryService.query("what should you remember about me");
+    const memoryPath = path.join(rootDir, "memory", "life_state.md");
+
+    await rm(memoryPath, { force: true });
+
+    const second = await queryService.query("what should you remember about me");
+    expect(second.lifeState).toBe(first.lifeState);
+  });
+
+  it("normalizes multiline atom content in the projection markdown", async () => {
+    await captureMemory(repository, {
+      content: "Morgan's note:\nsecond line of detail",
+      sourceRef: "phase2:multiline",
+      entityHint: "Morgan Chen",
+      importance: 0.9,
+      decayClass: "preference",
+    });
+    await new ProjectionRebuilder(repository, rootDir).rebuild();
+
+    const morganFile = await readFile(path.join(rootDir, "memory", "entities", "family", "morgan-chen.md"), "utf8");
+    const lifeState = await readFile(path.join(rootDir, "memory", "life_state.md"), "utf8");
+
+    expect(morganFile).toContain("Morgan's note: second line of detail");
+    expect(morganFile).not.toContain("Morgan's note:\nsecond line of detail");
+    expect(lifeState).toContain("Morgan's note: second line of detail");
   });
 
   it("invalidates cached life state reads when the file mtime changes", async () => {

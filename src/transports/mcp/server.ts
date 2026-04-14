@@ -33,54 +33,64 @@ async function proxyToolCall(name: string, argumentsValue: Record<string, unknow
     "content-type": "application/json",
   };
 
+  async function callJson(pathname: string, init: RequestInit): Promise<unknown> {
+    const response = await fetch(`${getBaseUrl()}${pathname}`, init);
+    const raw = await response.text();
+    const parsed = raw ? (JSON.parse(raw) as unknown) : null;
+
+    if (!response.ok) {
+      const message =
+        typeof parsed === "object" && parsed !== null && "error" in parsed
+          ? String((parsed as { error?: unknown }).error ?? `HTTP ${response.status}`)
+          : `HTTP ${response.status}`;
+      throw new Error(message);
+    }
+
+    return parsed;
+  }
+
   if (name === "capture") {
-    const response = await fetch(`${getBaseUrl()}/capture`, {
+    return callJson("/capture", {
       method: "POST",
       headers,
       body: JSON.stringify(argumentsValue ?? {}),
     });
-    return response.json();
   }
 
   if (name === "query") {
-    const response = await fetch(`${getBaseUrl()}/query`, {
+    return callJson("/query", {
       method: "POST",
       headers,
       body: JSON.stringify({ text: argumentsValue?.text ?? "" }),
     });
-    return response.json();
   }
 
   if (name === "get_entity") {
-    const response = await fetch(`${getBaseUrl()}/entity/${encodeURIComponent(String(argumentsValue?.id ?? ""))}`, {
+    return callJson(`/entity/${encodeURIComponent(String(argumentsValue?.id ?? ""))}`, {
       headers,
     });
-    return response.json();
   }
 
   if (name === "propose_correction") {
-    const response = await fetch(`${getBaseUrl()}/correction`, {
+    return callJson("/correction", {
       method: "POST",
       headers,
       body: JSON.stringify(argumentsValue ?? {}),
     });
-    return response.json();
   }
 
   if (name === "consolidate") {
-    const response = await fetch(`${getBaseUrl()}/consolidate`, {
+    return callJson("/consolidate", {
       method: "POST",
       headers,
       body: JSON.stringify(argumentsValue ?? {}),
     });
-    return response.json();
   }
 
   if (name === "export") {
-    const response = await fetch(`${getBaseUrl()}/export`, {
+    return callJson("/export", {
       headers,
     });
-    return response.json();
   }
 
   throw new Error(`Unknown tool: ${name}`);
@@ -106,7 +116,15 @@ function toolList() {
     {
       name: "propose_correction",
       description: "Create a correction proposal against an existing atom.",
-      inputSchema: { type: "object", properties: { proposedContent: { type: "string" } }, required: ["proposedContent"] },
+      inputSchema: {
+        type: "object",
+        properties: {
+          targetAtomId: { type: "string" },
+          proposedContent: { type: "string" },
+          reason: { type: "string" },
+        },
+        required: ["proposedContent"],
+      },
     },
     {
       name: "consolidate",
@@ -221,7 +239,28 @@ export async function startMcpProxyServer(): Promise<void> {
 
       const payload = buffer.slice(bodyStart, bodyStart + contentLength);
       buffer = buffer.slice(bodyStart + contentLength);
-      void handleMessage(JSON.parse(payload) as JsonRpcRequest);
+      try {
+        const request = JSON.parse(payload) as JsonRpcRequest;
+        void handleMessage(request).catch((error) => {
+          writeMessage({
+            jsonrpc: "2.0",
+            id: request.id ?? null,
+            error: {
+              code: -32603,
+              message: error instanceof Error ? error.message : String(error),
+            },
+          });
+        });
+      } catch (error) {
+        writeMessage({
+          jsonrpc: "2.0",
+          id: null,
+          error: {
+            code: -32700,
+            message: error instanceof Error ? error.message : String(error),
+          },
+        });
+      }
     }
   });
 }

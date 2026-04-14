@@ -1,6 +1,8 @@
-import { mkdtemp, open, readFile, rm } from "node:fs/promises";
+import { mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { afterEach, describe, expect, it } from "vitest";
 import type { StubLanguageModelScenario } from "../src/adapters/llm/StubLanguageModel.js";
 import { loadFixtures } from "../src/app/fixtures.js";
@@ -49,6 +51,58 @@ async function startServer(services: MemoryServices): Promise<{ baseUrl: string;
     baseUrl: `http://127.0.0.1:${address.port}`,
     close: async () => new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve()))),
   };
+}
+
+function encodeMcpMessage(message: unknown): string {
+  const payload = JSON.stringify(message);
+  return `Content-Length: ${Buffer.byteLength(payload, "utf8")}\r\n\r\n${payload}`;
+}
+
+function createMcpReader(stdout: NodeJS.ReadableStream): () => Promise<Record<string, unknown>> {
+  let buffer = "";
+
+  return async () => {
+    while (true) {
+      while (true) {
+        const headerEnd = buffer.indexOf("\r\n\r\n");
+        if (headerEnd === -1) {
+          break;
+        }
+
+        const headerBlock = buffer.slice(0, headerEnd);
+        const match = headerBlock.match(/Content-Length:\s*(\d+)/i);
+        if (!match) {
+          buffer = "";
+          break;
+        }
+
+        const contentLength = Number(match[1]);
+        const bodyStart = headerEnd + 4;
+        if (buffer.length < bodyStart + contentLength) {
+          break;
+        }
+
+        const payload = buffer.slice(bodyStart, bodyStart + contentLength);
+        buffer = buffer.slice(bodyStart + contentLength);
+        return JSON.parse(payload) as Record<string, unknown>;
+      }
+
+      const [chunk] = (await once(stdout, "data")) as [Buffer | string];
+      buffer += chunk.toString();
+    }
+  };
+}
+
+async function readMcpResponse(
+  readMessage: () => Promise<Record<string, unknown>>,
+  id: number,
+): Promise<Record<string, unknown>> {
+  while (true) {
+    const message = await readMessage();
+    if (message.id === id) {
+      return message;
+    }
+  }
 }
 
 describe("Phase 4 transports and automation", () => {
@@ -122,6 +176,96 @@ describe("Phase 4 transports and automation", () => {
     }
   });
 
+  it("returns 400 for malformed JSON bodies and logs the failure", async () => {
+    process.env.OB2_API_TOKEN = "phase4-test-token";
+    const repository = await buildRepository();
+    const rootDir = await makeRootDir("ob2-phase4-http-bad-json-");
+    const services = buildServices(repository, rootDir, {
+      enabled: false,
+      pendingThreshold: 50,
+      lockFilePath: path.join(rootDir, ".lock"),
+    });
+    const server = await startServer(services);
+
+    try {
+      const response = await fetch(`${server.baseUrl}/capture`, {
+        method: "POST",
+        headers: {
+          authorization: "Bearer phase4-test-token",
+          "content-type": "application/json",
+        },
+        body: "{",
+      });
+
+      expect(response.status).toBe(400);
+      const json = (await response.json()) as { error: string };
+      expect(json.error).toContain("valid JSON");
+
+      const requestLogs = await repository.listRequestLogs();
+      const badRequest = requestLogs.find((entry) => entry.route === "/capture");
+      expect(badRequest?.statusCode).toBe(400);
+      expect(String((badRequest?.metadata.error as string | undefined) ?? "")).toContain("valid JSON");
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("surfaces upstream HTTP failures as MCP tool errors", async () => {
+    process.env.OB2_API_TOKEN = "phase4-test-token";
+    const repository = await buildRepository();
+    const rootDir = await makeRootDir("ob2-phase4-mcp-");
+    const services = buildServices(repository, rootDir, {
+      enabled: false,
+      pendingThreshold: 50,
+      lockFilePath: path.join(rootDir, ".lock"),
+    });
+    const server = await startServer(services);
+    const address = new URL(server.baseUrl);
+    const child = spawn("node", ["./node_modules/tsx/dist/cli.mjs", "src/cli/index.ts", "mcp", "serve"], {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        OB2_API_TOKEN: "phase4-test-token",
+        OB2_API_HOST: address.hostname,
+        OB2_API_PORT: address.port,
+      },
+    });
+    const readMessage = createMcpReader(child.stdout);
+
+    try {
+      child.stdin.write(
+        encodeMcpMessage({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "initialize",
+          params: {},
+        }),
+      );
+      await readMcpResponse(readMessage, 1);
+
+      child.stdin.write(
+        encodeMcpMessage({
+          jsonrpc: "2.0",
+          id: 2,
+          method: "tools/call",
+          params: {
+            name: "query",
+            arguments: {},
+          },
+        }),
+      );
+
+      const response = await readMcpResponse(readMessage, 2);
+      expect(response.error).toBeDefined();
+      expect(response.result).toBeUndefined();
+      expect(String((response.error as { message?: string } | undefined)?.message ?? "")).toContain("text is required");
+    } finally {
+      child.stdin.end();
+      child.kill("SIGTERM");
+      await server.close();
+    }
+  });
+
   it("automatically consolidates after capture when the threshold is reached", async () => {
     const repository = await buildRepository();
     const rootDir = await makeRootDir("ob2-phase4-automation-ok-");
@@ -168,6 +312,48 @@ describe("Phase 4 transports and automation", () => {
     expect(result.automation?.status).toBe("aborted");
     const notifications = await repository.listNotifications();
     expect(notifications.some((notification) => notification.kind === "automated_consolidation_aborted")).toBe(true);
+  });
+
+  it("keeps capture working when automation lock setup fails and records a failed automation", async () => {
+    const repository = await buildRepository();
+    const rootDir = await makeRootDir("ob2-phase4-automation-failed-capture-");
+    await writeFile(path.join(rootDir, "locks"), "not-a-directory", "utf8");
+    const services = buildServices(repository, rootDir, {
+      enabled: true,
+      pendingThreshold: 1,
+      lockFilePath: path.join(rootDir, "locks", "automation.lock"),
+    });
+
+    const result = await services.capture({
+      content: "Morgan Chen switched notebook vendors last week.",
+      sourceRef: "phase4:auto:failed-capture",
+      entityHint: "Morgan Chen",
+      decayClass: "ephemeral",
+      importance: 0.3,
+    });
+
+    expect(result.atom.content).toContain("Morgan Chen switched notebook vendors");
+    expect(result.automation?.status).toBe("failed");
+    const notifications = await repository.listNotifications();
+    expect(notifications.some((notification) => notification.kind === "automated_consolidation_failed")).toBe(true);
+  });
+
+  it("reports lock setup failures for scheduled automation instead of skipping silently", async () => {
+    const repository = await buildRepository();
+    const rootDir = await makeRootDir("ob2-phase4-automation-failed-scheduled-");
+    await writeFile(path.join(rootDir, "locks"), "not-a-directory", "utf8");
+    const services = buildServices(repository, rootDir, {
+      enabled: true,
+      pendingThreshold: 1,
+      lockFilePath: path.join(rootDir, "locks", "automation.lock"),
+    });
+
+    const result = await services.runScheduledAutomation();
+
+    expect(result?.status).toBe("failed");
+    expect(result?.reason).toContain("file already exists");
+    const notifications = await repository.listNotifications();
+    expect(notifications.some((notification) => notification.kind === "automated_consolidation_failed")).toBe(true);
   });
 
   it("skips duplicate automated runs when the lock file already exists", async () => {

@@ -29,7 +29,33 @@ function readOption(args: string[], flag: string): string | undefined {
   if (index === -1) {
     return undefined;
   }
-  return args[index + 1];
+  const value = args[index + 1];
+  if (!value || value.startsWith("--")) {
+    return undefined;
+  }
+  return value;
+}
+
+function collectPositionalContent(args: string[], flags: string[]): string {
+  const content: string[] = [];
+
+  for (let i = 1; i < args.length; i += 1) {
+    const token = args[i];
+    if (token === undefined) {
+      continue;
+    }
+    if (!flags.includes(token)) {
+      content.push(token);
+      continue;
+    }
+
+    const value = args[i + 1];
+    if (value && !value.startsWith("--")) {
+      i += 1;
+    }
+  }
+
+  return content.join(" ").trim();
 }
 
 function hasFlag(args: string[], flag: string): boolean {
@@ -151,11 +177,7 @@ async function handleCorrections(args: string[]): Promise<void> {
   if (subcommand === "propose") {
     const targetAtomId = readOption(args, "--target") ?? null;
     const reason = readOption(args, "--reason") ?? null;
-    const content = args
-      .filter((arg, index) => index > 0)
-      .filter((arg) => !["--target", targetAtomId ?? "", "--reason", reason ?? ""].includes(arg))
-      .join(" ")
-      .trim();
+    const content = collectPositionalContent(args, ["--target", "--reason"]);
     if (!content) {
       throw new Error("corrections propose requires correction content");
     }
