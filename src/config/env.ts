@@ -28,12 +28,32 @@ function loadDotEnv(): void {
 
     const key = trimmed.slice(0, separator).trim();
     const value = trimmed.slice(separator + 1).trim();
-    if (!process.env[key]) {
+    if (process.env[key] === undefined) {
       process.env[key] = value;
     }
   }
 
   loaded = true;
+}
+
+function parsePositiveIntegerEnv(name: string, fallback: number): number {
+  loadDotEnv();
+  const raw = process.env[name];
+  if (raw === undefined) {
+    return fallback;
+  }
+
+  const trimmed = raw.trim();
+  if (!/^\d+$/.test(trimmed)) {
+    throw new Error(`${name} must be a positive integer, got ${JSON.stringify(raw)}.`);
+  }
+
+  const value = Number(trimmed);
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`${name} must be a positive integer, got ${JSON.stringify(raw)}.`);
+  }
+
+  return value;
 }
 
 export function getDatabaseUrl(): string {
@@ -62,8 +82,7 @@ export function getApiHost(): string {
 }
 
 export function getApiPort(): number {
-  loadDotEnv();
-  return Number(process.env.OB2_API_PORT ?? "4318");
+  return parsePositiveIntegerEnv("OB2_API_PORT", 4318);
 }
 
 export function getApiToken(): string | null {
@@ -103,8 +122,7 @@ export function getApiClientTokens(): Map<string, string> {
 }
 
 export function getPendingConsolidationThreshold(): number {
-  loadDotEnv();
-  return Number(process.env.OB2_PENDING_CONSOLIDATION_THRESHOLD ?? "50");
+  return parsePositiveIntegerEnv("OB2_PENDING_CONSOLIDATION_THRESHOLD", 50);
 }
 
 export function isAutomationEnabled(): boolean {

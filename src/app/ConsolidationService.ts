@@ -101,6 +101,12 @@ export class ConsolidationService {
     return entities;
   }
 
+  private async findAppliedCorrectionAtom(action: CorrectionAction): Promise<MemoryAtom | null> {
+    const appliedSourceRef = `correction:${action.id}`;
+    const atoms = await this.repository.listAllMemoryAtoms();
+    return atoms.find((atom) => atom.sourceRef === appliedSourceRef) ?? null;
+  }
+
   private async planPendingAtom(atom: MemoryAtom): Promise<PendingAtomAction> {
     const candidates = await this.resolveCandidateEntities(atom);
     const currentEntity = atom.entityId ? await this.repository.getEntityById(atom.entityId) : null;
@@ -248,6 +254,30 @@ export class ConsolidationService {
 
   private async processCorrection(action: CorrectionAction): Promise<{ applied: boolean; reviewItemsCreated: number }> {
     const target = action.targetAtomId ? await this.repository.getMemoryAtomById(action.targetAtomId) : null;
+    const appliedAtom = await this.findAppliedCorrectionAtom(action);
+
+    if (appliedAtom) {
+      if (target) {
+        const invalidAt = appliedAtom.validAt ?? appliedAtom.createdAt;
+        if (target.invalidAt === null) {
+          await this.repository.updateMemoryAtom({
+            id: target.id,
+            invalidAt,
+          });
+        }
+        if (appliedAtom.supersedesId !== target.id) {
+          await this.repository.updateMemoryAtom({
+            id: appliedAtom.id,
+            supersedesId: target.id,
+            consolidationStatus: "processed",
+          });
+        }
+      }
+
+      await this.repository.updateCorrectionActionStatus(action.id, "applied");
+      return { applied: true, reviewItemsCreated: 0 };
+    }
+
     if (!target || !target.entityId || target.locked) {
       await this.repository.updateCorrectionActionStatus(action.id, "under_review");
       return { applied: false, reviewItemsCreated: 0 };
@@ -334,6 +364,7 @@ export class ConsolidationService {
     const planned: PendingAtomAction[] = [];
     let lowConfidenceCount = 0;
     let errorCount = 0;
+    let processedAtomCount = 0;
 
     for (const atom of pendingAtoms) {
       try {
@@ -377,53 +408,79 @@ export class ConsolidationService {
     }
 
     let reviewItemsCreated = 0;
-    for (const action of planned) {
-      reviewItemsCreated += await this.applyPlannedAtom(action);
-    }
-
-    const correctionActions = await this.repository.listCorrectionActions(["proposed", "under_review"]);
     const appliedCorrectionIds: string[] = [];
-    for (const correction of correctionActions) {
-      const result = await this.processCorrection(correction);
-      reviewItemsCreated += result.reviewItemsCreated;
-      if (result.applied) {
-        appliedCorrectionIds.push(correction.id);
+
+    try {
+      for (const action of planned) {
+        reviewItemsCreated += await this.applyPlannedAtom(action);
+        processedAtomCount += 1;
       }
+
+      const correctionActions = await this.repository.listCorrectionActions(["proposed", "under_review"]);
+      for (const correction of correctionActions) {
+        const result = await this.processCorrection(correction);
+        reviewItemsCreated += result.reviewItemsCreated;
+        if (result.applied) {
+          appliedCorrectionIds.push(correction.id);
+        }
+      }
+
+      const compiler = new ConsolidatedProjectionCompiler(
+        this.repository,
+        this.languageModel,
+        this.options.rootDir,
+        this.options.compilerHooks,
+      );
+      const compiled = await compiler.compile();
+
+      await this.repository.completeConsolidationRun({
+        id: run.id,
+        status: "completed",
+        atomCount: pendingAtoms.length,
+        processedAtomCount,
+        lowConfidenceAtomCount: lowConfidenceCount,
+        errorCount,
+        notes: `Processed ${pendingAtoms.length} pending atoms.`,
+        errorMessage: null,
+        metadata: {},
+      });
+      await this.repository.updateSystemState({
+        consolidationEnabled: true,
+        consecutiveAbortedRuns: 0,
+      });
+
+      return {
+        runId: run.id,
+        status: "completed",
+        atomCount: pendingAtoms.length,
+        lowConfidenceCount,
+        errorCount,
+        outputPath: compiled.outputPath,
+        reviewItemsCreated,
+        appliedCorrectionIds,
+      };
+    } catch (error) {
+      const nextAbortCount = state.consecutiveAbortedRuns + 1;
+      try {
+        await this.repository.completeConsolidationRun({
+          id: run.id,
+          status: "aborted",
+          atomCount: pendingAtoms.length,
+          processedAtomCount,
+          lowConfidenceAtomCount: lowConfidenceCount,
+          errorCount: errorCount + 1,
+          notes: "Consolidation aborted after an unexpected failure.",
+          errorMessage: error instanceof Error ? error.message : String(error),
+          metadata: {},
+        });
+        await this.repository.updateSystemState({
+          consecutiveAbortedRuns: nextAbortCount,
+          consolidationEnabled: nextAbortCount >= 3 ? false : state.consolidationEnabled,
+        });
+      } catch {
+        // Best-effort cleanup; the original failure still needs to surface.
+      }
+      throw error;
     }
-
-    const compiler = new ConsolidatedProjectionCompiler(
-      this.repository,
-      this.languageModel,
-      this.options.rootDir,
-      this.options.compilerHooks,
-    );
-    const compiled = await compiler.compile();
-
-    await this.repository.completeConsolidationRun({
-      id: run.id,
-      status: "completed",
-      atomCount: pendingAtoms.length,
-      processedAtomCount: planned.length,
-      lowConfidenceAtomCount: lowConfidenceCount,
-      errorCount,
-      notes: `Processed ${pendingAtoms.length} pending atoms.`,
-      errorMessage: null,
-      metadata: {},
-    });
-    await this.repository.updateSystemState({
-      consolidationEnabled: true,
-      consecutiveAbortedRuns: 0,
-    });
-
-    return {
-      runId: run.id,
-      status: "completed",
-      atomCount: pendingAtoms.length,
-      lowConfidenceCount,
-      errorCount,
-      outputPath: compiled.outputPath,
-      reviewItemsCreated,
-      appliedCorrectionIds,
-    };
   }
 }

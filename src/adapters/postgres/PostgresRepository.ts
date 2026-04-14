@@ -145,6 +145,11 @@ type NotificationRow = QueryResultRow & {
   created_at: Date;
 };
 
+const ACTIVE_ATOM_FILTER = `
+  (valid_at IS NULL OR valid_at <= NOW())
+  AND (invalid_at IS NULL OR invalid_at > NOW())
+`;
+
 function mapEntity(row: EntityRow): Entity {
   return {
     id: row.id,
@@ -280,11 +285,11 @@ function mapNotification(row: NotificationRow): Notification {
   };
 }
 
-function requireRow<T>(row: T | undefined, message: string): T {
-  if (!row) {
+function requireRow<T>(row: T | null | undefined, message: string): NonNullable<T> {
+  if (row == null) {
     throw new Error(message);
   }
-  return row;
+  return row as NonNullable<T>;
 }
 
 export class PostgresRepository implements Repository {
@@ -309,12 +314,17 @@ export class PostgresRepository implements Repository {
       `
         INSERT INTO entity (id, name, slug, type, parent_entity_id)
         VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (name) DO NOTHING
         RETURNING *
       `,
       [input.id, input.name, input.slug, input.type, input.parentEntityId],
     );
 
-    return mapEntity(requireRow(result.rows[0], "Failed to create entity"));
+    if (result.rows[0]) {
+      return mapEntity(result.rows[0]);
+    }
+
+    return requireRow(await this.getEntityByName(input.name), `Failed to create entity: ${input.name}`);
   }
 
   async getEntityById(id: string): Promise<Entity | null> {
@@ -367,6 +377,7 @@ export class PostgresRepository implements Repository {
               metadata
             )
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18::jsonb)
+            ON CONFLICT (source_ref, content_fingerprint) DO NOTHING
             RETURNING *
           `,
           [
@@ -390,8 +401,21 @@ export class PostgresRepository implements Repository {
             JSON.stringify(input.metadata),
           ],
         );
+        let atomRow = result.rows[0];
+        if (!atomRow) {
+          const existing = await client.query<AtomRow>(
+            `
+              SELECT *
+              FROM memory_atom
+              WHERE source_ref = $1 AND content_fingerprint = $2
+              LIMIT 1
+            `,
+            [input.sourceRef, input.contentFingerprint],
+          );
+          atomRow = existing.rows[0];
+        }
         await client.query("COMMIT");
-        return mapAtom(requireRow(result.rows[0], "Failed to create memory atom"));
+        return mapAtom(requireRow(atomRow, "Failed to create memory atom"));
       } catch (error) {
         await client.query("ROLLBACK");
         throw error;
@@ -552,7 +576,7 @@ export class PostgresRepository implements Repository {
         FROM memory_atom
         WHERE
           entity_id = $1
-          AND (invalid_at IS NULL OR invalid_at > NOW())
+          AND ${ACTIVE_ATOM_FILTER}
         ORDER BY importance DESC, created_at DESC
       `,
       [entityId],
@@ -566,7 +590,7 @@ export class PostgresRepository implements Repository {
         SELECT *
         FROM memory_atom
         WHERE
-          invalid_at IS NULL
+          ${ACTIVE_ATOM_FILTER}
           AND (decay_class IN ('profile', 'preference') OR importance >= 0.8)
         ORDER BY importance DESC, created_at DESC
         LIMIT $1
@@ -582,7 +606,7 @@ export class PostgresRepository implements Repository {
         SELECT *
         FROM memory_atom
         WHERE
-          (invalid_at IS NULL OR invalid_at > NOW())
+          ${ACTIVE_ATOM_FILTER}
           AND ($1::timestamptz IS NULL OR created_at > $1)
         ORDER BY created_at DESC
         LIMIT $2
@@ -604,7 +628,7 @@ export class PostgresRepository implements Repository {
             ) AS lexical_score,
             (1 / (1 + (EXTRACT(EPOCH FROM (NOW() - created_at)) / 86400.0))) AS recency_score
           FROM memory_atom
-          WHERE invalid_at IS NULL OR invalid_at > NOW()
+          WHERE ${ACTIVE_ATOM_FILTER}
         )
         SELECT *
         FROM ranked_atoms
@@ -665,19 +689,6 @@ export class PostgresRepository implements Repository {
   }
 
   async createEntityLink(input: CreateEntityLinkInput): Promise<EntityLink> {
-    const existing = await this.pool.query<EntityLinkRow>(
-      `
-        SELECT *
-        FROM entity_link
-        WHERE entity_id = $1 AND related_entity_id = $2 AND relationship_type = $3
-        LIMIT 1
-      `,
-      [input.entityId, input.relatedEntityId, input.relationshipType],
-    );
-    if (existing.rows[0]) {
-      return mapEntityLink(existing.rows[0]);
-    }
-
     const result = await this.pool.query<EntityLinkRow>(
       `
         INSERT INTO entity_link (
@@ -689,6 +700,7 @@ export class PostgresRepository implements Repository {
           evidence_atom_id
         )
         VALUES ($1, $2, $3, $4, $5, $6)
+        ON CONFLICT (entity_id, related_entity_id, relationship_type) DO NOTHING
         RETURNING *
       `,
       [
@@ -700,7 +712,20 @@ export class PostgresRepository implements Repository {
         input.evidenceAtomId ?? null,
       ],
     );
-    return mapEntityLink(requireRow(result.rows[0], "Failed to create entity link"));
+    if (result.rows[0]) {
+      return mapEntityLink(result.rows[0]);
+    }
+
+    const existing = await this.pool.query<EntityLinkRow>(
+      `
+        SELECT *
+        FROM entity_link
+        WHERE entity_id = $1 AND related_entity_id = $2 AND relationship_type = $3
+        LIMIT 1
+      `,
+      [input.entityId, input.relatedEntityId, input.relationshipType],
+    );
+    return mapEntityLink(requireRow(existing.rows[0], "Failed to create entity link"));
   }
 
   async createConsolidationRun(input: CreateConsolidationRunInput): Promise<ConsolidationRun> {
@@ -899,30 +924,28 @@ export class PostgresRepository implements Repository {
   }
 
   async updateSystemState(input: UpdateSystemStateInput): Promise<SystemState> {
-    const current = await this.getSystemState();
-    const next: SystemState = {
-      consolidationEnabled:
-        input.consolidationEnabled === undefined ? current.consolidationEnabled : input.consolidationEnabled,
-      consecutiveAbortedRuns:
-        input.consecutiveAbortedRuns === undefined ? current.consecutiveAbortedRuns : input.consecutiveAbortedRuns,
-      updatedAt: current.updatedAt,
-    };
     const result = await this.pool.query<SystemStateRow>(
       `
         INSERT INTO system_state (singleton, consolidation_enabled, consecutive_aborted_runs)
         VALUES (
           TRUE,
-          $1,
-          $2
+          COALESCE($1, TRUE),
+          COALESCE($2, 0)
         )
         ON CONFLICT (singleton)
         DO UPDATE SET
-          consolidation_enabled = EXCLUDED.consolidation_enabled,
-          consecutive_aborted_runs = EXCLUDED.consecutive_aborted_runs,
+          consolidation_enabled = CASE
+            WHEN $1 IS NULL THEN system_state.consolidation_enabled
+            ELSE $1
+          END,
+          consecutive_aborted_runs = CASE
+            WHEN $2 IS NULL THEN system_state.consecutive_aborted_runs
+            ELSE $2
+          END,
           updated_at = NOW()
         RETURNING *
       `,
-      [next.consolidationEnabled, next.consecutiveAbortedRuns],
+      [input.consolidationEnabled ?? null, input.consecutiveAbortedRuns ?? null],
     );
     return mapSystemState(requireRow(result.rows[0], "Failed to update system state"));
   }

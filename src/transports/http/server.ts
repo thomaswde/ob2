@@ -3,11 +3,14 @@ import { getApiClientTokens, getApiHost, getApiPort } from "../../config/env.js"
 import { makeId } from "../../utils/crypto.js";
 import type { CaptureMemoryInput, DecayClass } from "../../domain/types.js";
 import type { MemoryServices } from "../../app/MemoryServices.js";
+import { ValidationError } from "../../domain/validation.js";
 
 interface AuthResult {
   ok: boolean;
   clientId: string | null;
 }
+
+class BadRequestError extends Error {}
 
 function sendJson(response: ServerResponse, statusCode: number, body: unknown): void {
   response.statusCode = statusCode;
@@ -41,7 +44,19 @@ async function readJsonBody(request: IncomingMessage): Promise<Record<string, un
     return {};
   }
 
-  return JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>;
+  const raw = Buffer.concat(chunks).toString("utf8");
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new BadRequestError("Request body must be valid JSON");
+  }
+
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new BadRequestError("Request body must be a JSON object");
+  }
+
+  return parsed as Record<string, unknown>;
 }
 
 function normalizeCaptureInput(body: Record<string, unknown>): CaptureMemoryInput {
@@ -69,7 +84,7 @@ export function createHttpApiServer(services: MemoryServices, options: HttpServe
   const server = createServer(async (request, response) => {
     const startedAt = Date.now();
     const method = request.method ?? "GET";
-    const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "127.0.0.1"}`);
+    const url = new URL(request.url ?? "/", "http://127.0.0.1");
     let route = url.pathname;
     let statusCode = 500;
     let clientId = "anonymous";
@@ -105,7 +120,10 @@ export function createHttpApiServer(services: MemoryServices, options: HttpServe
 
       if (method === "POST" && url.pathname === "/query") {
         const body = await readJsonBody(request);
-        const text = String(body.text ?? "");
+        const text = typeof body.text === "string" ? body.text.trim() : "";
+        if (!text) {
+          throw new BadRequestError("text is required");
+        }
         const result = await services.query(text);
         metadata = {
           reasoning: result.reasoning,
@@ -131,9 +149,13 @@ export function createHttpApiServer(services: MemoryServices, options: HttpServe
 
       if (method === "POST" && url.pathname === "/correction") {
         const body = await readJsonBody(request);
+        const proposedContent = typeof body.proposedContent === "string" ? body.proposedContent.trim() : "";
+        if (!proposedContent) {
+          throw new BadRequestError("proposedContent is required");
+        }
         const result = await services.proposeCorrection(
           body.targetAtomId ? String(body.targetAtomId) : null,
-          String(body.proposedContent ?? ""),
+          proposedContent,
           body.reason ? String(body.reason) : undefined,
         );
         statusCode = 201;
@@ -184,7 +206,11 @@ export function createHttpApiServer(services: MemoryServices, options: HttpServe
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       metadata = { ...metadata, error: message };
-      statusCode = statusCode >= 400 ? statusCode : 500;
+      if (error instanceof BadRequestError || error instanceof ValidationError) {
+        statusCode = 400;
+      } else {
+        statusCode = statusCode >= 400 ? statusCode : 500;
+      }
       sendJson(response, statusCode, { error: message });
     } finally {
       if (url.pathname !== "/healthz") {

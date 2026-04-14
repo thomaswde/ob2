@@ -25,6 +25,41 @@ describe("validateCaptureMemoryInput", () => {
     ).toThrow("validAt must be a valid timestamp");
   });
 
+  it("rejects empty timestamps instead of treating them as missing", () => {
+    expect(() =>
+      validateCaptureMemoryInput({
+        content: "Hello",
+        sourceRef: "test:1",
+        importance: 0.5,
+        decayClass: "profile",
+        validAt: "",
+      }),
+    ).toThrow("validAt must be a valid timestamp");
+  });
+
+  it("rejects non-string required fields", () => {
+    expect(() =>
+      validateCaptureMemoryInput({
+        content: 123 as unknown as string,
+        sourceRef: "test:1",
+        importance: 0.5,
+        decayClass: "profile",
+      }),
+    ).toThrow("content must be a string");
+  });
+
+  it("rejects non-plain metadata objects", () => {
+    expect(() =>
+      validateCaptureMemoryInput({
+        content: "Hello",
+        sourceRef: "test:1",
+        importance: 0.5,
+        decayClass: "profile",
+        metadata: [] as unknown as Record<string, unknown>,
+      }),
+    ).toThrow("metadata must be an object");
+  });
+
   it("accepts valid input", () => {
     const result = validateCaptureMemoryInput({
       content: "Morgan prefers morning flights",
