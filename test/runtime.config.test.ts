@@ -3,7 +3,11 @@ import { createRuntimeMemoryServices } from "../src/app/runtimeServices.js";
 import { getApiPort, getPendingConsolidationThreshold } from "../src/config/env.js";
 
 const envKeys = [
+  "OB2_LLM_BACKEND",
+  "OB2_LLM_MODEL",
   "OB2_USE_STUB_LLM",
+  "ANTHROPIC_API_KEY",
+  "ANTHROPIC_MODEL",
   "OB2_AUTOMATION_ENABLED",
   "OB2_API_PORT",
   "OB2_PENDING_CONSOLIDATION_THRESHOLD",

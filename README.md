@@ -40,7 +40,9 @@ Each gate fires only when the one before it is insufficient. The result is conte
 
 - Node.js 20+
 - PostgreSQL 16 (Docker is the easiest path; a `docker-compose.yml` is included)
-- An Anthropic API key (required for consolidation, query reasoning, and life-state synthesis)
+- Anthropic access via either:
+  - `OB2_LLM_BACKEND=anthropic-api` with `ANTHROPIC_API_KEY`
+  - `OB2_LLM_BACKEND=anthropic-agent` with a local Claude Code / Claude Pro or Max login for experimental subscription-backed use
 
 ---
 
@@ -51,7 +53,7 @@ git clone <repo>
 cd ob2
 npm install
 cp .env.example .env
-# Edit .env — set ANTHROPIC_API_KEY and OB2_API_TOKEN at minimum
+# Edit .env — set OB2_LLM_BACKEND plus the corresponding Anthropic auth, and OB2_API_TOKEN
 ```
 
 Start Postgres and apply migrations:
@@ -242,8 +244,10 @@ All configuration is read from environment variables. Copy `.env.example` to `.e
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `DATABASE_URL` | Yes | — | PostgreSQL connection string |
-| `ANTHROPIC_API_KEY` | Yes | — | Anthropic API key |
-| `ANTHROPIC_MODEL` | No | `claude-3-5-sonnet-latest` | Model used for all LLM calls |
+| `OB2_LLM_BACKEND` | Yes | — | LLM backend: `stub`, `anthropic-api`, or `anthropic-agent` |
+| `OB2_LLM_MODEL` | No | `claude-3-5-sonnet-latest` | Model used for the selected non-stub backend |
+| `ANTHROPIC_API_KEY` | Yes for `anthropic-api` | — | Anthropic API key for the production API backend |
+| `ANTHROPIC_MODEL` | No | `claude-3-5-sonnet-latest` | Legacy Anthropic model override retained for compatibility |
 | `OB2_API_TOKEN` | Yes (for API) | — | Bearer token for HTTP API auth |
 | `OB2_API_CLIENT_TOKENS` | No | — | Per-client tokens: `id:token,id:token` |
 | `OB2_API_HOST` | No | `127.0.0.1` | API bind address |
@@ -251,7 +255,9 @@ All configuration is read from environment variables. Copy `.env.example` to `.e
 | `OB2_AUTOMATION_ENABLED` | No | `0` | Enable post-capture and scheduled automation |
 | `OB2_PENDING_CONSOLIDATION_THRESHOLD` | No | `50` | Atom count that triggers automatic consolidation |
 | `OB2_AUTOMATION_LOCK_FILE` | No | `.ob2-consolidate.lock` | File lock path for concurrent consolidation prevention |
-| `OB2_USE_STUB_LLM` | No | `0` | Use deterministic stub LLM (for testing) |
+| `OB2_USE_STUB_LLM` | No | `0` | Deprecated compatibility alias for `OB2_LLM_BACKEND=stub` |
+
+`anthropic-agent` is experimental and intended for local development. It uses Anthropic's Agent SDK and a local Claude Code login path; it is not documented here as a general-purpose third-party Claude subscription login flow.
 
 ---
 
@@ -281,7 +287,7 @@ src/
   app/          Application services: capture, query, consolidation, projection, automation
   adapters/
     postgres/   Repository implementation, migrations, connection pool
-    llm/        Anthropic API client, deterministic test stub
+    llm/        Anthropic API + agent backends, deterministic test stub
   transports/
     http/       HTTP API server
     mcp/        MCP proxy over HTTP
