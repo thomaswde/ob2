@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 
 let loaded = false;
-const LLM_BACKENDS = ["stub", "anthropic-api", "anthropic-agent"] as const;
+const LLM_BACKENDS = ["stub", "anthropic-api", "anthropic-agent", "gemini-api"] as const;
 
 export type LlmBackend = (typeof LLM_BACKENDS)[number];
 
@@ -69,6 +69,11 @@ export function getAnthropicApiKey(): string | null {
   return process.env.ANTHROPIC_API_KEY ?? null;
 }
 
+export function getGeminiApiKey(): string | null {
+  loadDotEnv();
+  return process.env.OB2_GEMINI_API_KEY ?? process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY ?? null;
+}
+
 export function getEmbeddingApiKey(): string | null {
   loadDotEnv();
   const value = process.env.OB2_EMBEDDING_API_KEY?.trim();
@@ -94,9 +99,79 @@ export function isEmbeddingEnabled(): boolean {
   return getEmbeddingApiKey() !== null && process.env.OB2_EMBEDDINGS_ENABLED?.trim() !== "0";
 }
 
+export function getGeminiThinkingBudget(): number | null {
+  loadDotEnv();
+  const raw = process.env.OB2_GEMINI_THINKING_BUDGET;
+  if (raw === undefined) {
+    return null;
+  }
+
+  const trimmed = raw.trim();
+  if (!/^-?\d+$/.test(trimmed)) {
+    throw new Error(`${"OB2_GEMINI_THINKING_BUDGET"} must be an integer, got ${JSON.stringify(raw)}.`);
+  }
+
+  const value = Number(trimmed);
+  if (!Number.isSafeInteger(value) || value < -1) {
+    throw new Error(`${"OB2_GEMINI_THINKING_BUDGET"} must be -1 or a non-negative integer, got ${JSON.stringify(raw)}.`);
+  }
+
+  return value;
+}
+
 function getAnthropicDefaultModel(): string {
   loadDotEnv();
   return process.env.ANTHROPIC_MODEL ?? "claude-3-5-sonnet-latest";
+}
+
+function normalizeGoogleProjectResource(raw: string): { project: string; location: string | null } {
+  const trimmed = raw.trim();
+  const withLocationMatch = trimmed.match(/^projects\/([^/]+)\/locations\/([^/]+)$/);
+  if (withLocationMatch) {
+    return {
+      project: withLocationMatch[1]!,
+      location: withLocationMatch[2]!,
+    };
+  }
+
+  const projectOnlyMatch = trimmed.match(/^projects\/([^/]+)$/);
+  if (projectOnlyMatch) {
+    return {
+      project: projectOnlyMatch[1]!,
+      location: null,
+    };
+  }
+
+  return {
+    project: trimmed,
+    location: null,
+  };
+}
+
+export function getGeminiProject(): string | null {
+  loadDotEnv();
+  const raw = process.env.OB2_GEMINI_PROJECT?.trim() || process.env.GOOGLE_CLOUD_PROJECT?.trim();
+  if (!raw) {
+    return null;
+  }
+
+  return normalizeGoogleProjectResource(raw).project;
+}
+
+export function getGeminiLocation(): string {
+  loadDotEnv();
+
+  const explicitLocation = process.env.OB2_GEMINI_LOCATION?.trim() || process.env.GOOGLE_CLOUD_LOCATION?.trim();
+  const rawProject = process.env.OB2_GEMINI_PROJECT?.trim() || process.env.GOOGLE_CLOUD_PROJECT?.trim();
+  const embeddedLocation = rawProject ? normalizeGoogleProjectResource(rawProject).location : null;
+
+  if (explicitLocation && embeddedLocation && explicitLocation !== embeddedLocation) {
+    throw new Error(
+      `Gemini project location mismatch: project resource implies ${JSON.stringify(embeddedLocation)} but explicit location is ${JSON.stringify(explicitLocation)}.`,
+    );
+  }
+
+  return explicitLocation ?? embeddedLocation ?? "global";
 }
 
 export function shouldUseStubLlm(): boolean {
@@ -134,12 +209,16 @@ export function getLlmBackend(): LlmBackend {
     return "anthropic-api";
   }
 
+  if (getGeminiApiKey() || getGeminiProject()) {
+    return "gemini-api";
+  }
+
   if (isExplicitTestContext()) {
     return "stub";
   }
 
   throw new Error(
-    "No LLM backend configured. Set OB2_LLM_BACKEND to stub, anthropic-api, or anthropic-agent.",
+    "No LLM backend configured. Set OB2_LLM_BACKEND to stub, anthropic-api, anthropic-agent, or gemini-api.",
   );
 }
 
@@ -153,6 +232,11 @@ export function getLlmModel(backend: LlmBackend): string {
 
   if (backend === "stub") {
     return "stub";
+  }
+
+  if (backend === "gemini-api") {
+    loadDotEnv();
+    return process.env.GEMINI_MODEL?.trim() || "gemini-2.5-flash";
   }
 
   return getAnthropicDefaultModel();

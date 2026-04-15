@@ -22,17 +22,15 @@ OB2 puts reasoning *before* lookup, not after:
 
 **Gate 0** — Classify whether the query needs memory at all. Skip entirely for general knowledge questions.
 
-**Gate 1** — Load a synthesized life-state summary: only the facts that change how the AI should behave right now. Active goals, standing constraints, and recent life changes stay hot; stable biography and preferences stay out of the always-loaded context.
+**Gate 1** — Load a synthesized life-state narrative: active goals, standing constraints, recent changes, ongoing projects. This grounds every query with ambient context at zero per-turn cost.
 
 **Gate 1.5** — Bridge atoms captured since the last consolidation run so nothing recent is invisible.
 
 **Gate 2** — An oracle pass: given the query *and* the user's current life state, reason across the full entity index to identify relevant entities — including non-obvious lateral connections. A query about scheduling might surface financial, project, and family-constraint entities the user never mentioned.
 
-**Gate 3** — Semantic fallback for weak-signal queries where Gate 2 confidence is low. Query embeddings search valid atoms by cosine similarity, with lexical search retained as a graceful fallback when embeddings are unavailable.
+**Gate 3** — Lexical fallback for weak-signal queries where Gate 2 confidence is low.
 
 **Gate 4** — One-hop traversal over entity relationships. If Gate 2 surfaces an entity, follow its high-confidence links to gather the surrounding context automatically.
-
-Within Gate 2, entity files are no longer loaded wholesale when embeddings are available. OB2 re-ranks each entity's atoms against the query and injects only the top-scoring subset, which keeps large entities useful instead of bloated.
 
 Each gate fires only when the one before it is insufficient. The result is context that's both cheap to retrieve and actually useful.
 
@@ -42,7 +40,8 @@ Each gate fires only when the one before it is insufficient. The result is conte
 
 - Node.js 20+
 - PostgreSQL 16 (Docker is the easiest path; a `docker-compose.yml` is included)
-- Anthropic access via either:
+- LLM access via either:
+  - `OB2_LLM_BACKEND=gemini-api` with either a Gemini API key or Vertex AI project auth
   - `OB2_LLM_BACKEND=anthropic-api` with `ANTHROPIC_API_KEY`
   - `OB2_LLM_BACKEND=anthropic-agent` with a local Claude Code / Claude Pro or Max login for experimental subscription-backed use
 
@@ -55,7 +54,7 @@ git clone <repo>
 cd ob2
 npm install
 cp .env.example .env
-# Edit .env — set OB2_LLM_BACKEND plus the corresponding Anthropic auth, and OB2_API_TOKEN
+# Edit .env — set OB2_LLM_BACKEND plus the corresponding provider auth, and OB2_API_TOKEN
 ```
 
 Start Postgres and apply migrations:
@@ -63,14 +62,6 @@ Start Postgres and apply migrations:
 ```bash
 docker compose up -d postgres
 npm run db:migrate
-```
-
-If you want semantic retrieval, set the embedding variables in `.env` before starting the API or capture pipeline. OpenAI-compatible providers are supported through `OB2_EMBEDDING_BASE_URL`, so OpenRouter works without changing the chat backend.
-
-For existing datasets, run the one-shot backfill after migrations:
-
-```bash
-npm run backfill-embeddings
 ```
 
 Optionally load the included fixture corpus to verify the system end-to-end before adding real data:
@@ -126,8 +117,6 @@ Response includes `lifeState`, recent unconsolidated atoms, matched entity summa
 ```
 
 `decayClass` is one of `profile`, `preference`, `relationship`, `decision`, `task`, or `ephemeral`. Higher importance and longer-lived decay classes receive higher retrieval weight over time.
-
-When embeddings are enabled, capture stores the atom immediately and generates the embedding asynchronously. Retrieval improves as embeddings are filled in, but capture latency does not depend on the embedding provider.
 
 **`GET /entity/:id`** — Fetch an entity record with its linked atoms and relationships.
 
@@ -207,7 +196,6 @@ npm run ob -- consolidate --force-enable
 # Database
 npm run ob -- db migrate                  # Apply pending migrations, seed categories
 npm run ob -- db reset --force            # Truncate and reseed (local dev only)
-npm run backfill-embeddings               # Backfill embeddings for existing atoms
 
 # Capture
 npm run ob -- capture "fact" \
@@ -257,15 +245,16 @@ All configuration is read from environment variables. Copy `.env.example` to `.e
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `DATABASE_URL` | Yes | — | PostgreSQL connection string |
-| `OB2_LLM_BACKEND` | Yes | — | LLM backend: `stub`, `anthropic-api`, or `anthropic-agent` |
-| `OB2_LLM_MODEL` | No | `claude-3-5-sonnet-latest` | Model used for the selected non-stub backend |
+| `OB2_LLM_BACKEND` | Yes | — | LLM backend: `stub`, `gemini-api`, `anthropic-api`, or `anthropic-agent` |
+| `OB2_LLM_MODEL` | No | Provider-specific | Model used for the selected non-stub backend |
+| `OB2_GEMINI_API_KEY` | Yes for `gemini-api` unless using Vertex auth | — | Preferred direct Gemini API key |
+| `GEMINI_API_KEY` | Yes for `gemini-api` unless using Vertex auth | — | Compatibility alias for direct Gemini API key |
+| `GOOGLE_API_KEY` | Yes for `gemini-api` unless using Vertex auth | — | Compatibility alias supported by Google's SDK |
+| `OB2_GEMINI_PROJECT` | Yes for `gemini-api` when using Vertex auth instead of an API key | — | Vertex AI project id/number, or a resource like `projects/1094394278776` |
+| `OB2_GEMINI_LOCATION` | No | `global` | Vertex AI location for Gemini |
+| `GEMINI_MODEL` | No | `gemini-2.5-flash` | Legacy Gemini model override retained for compatibility |
 | `ANTHROPIC_API_KEY` | Yes for `anthropic-api` | — | Anthropic API key for the production API backend |
 | `ANTHROPIC_MODEL` | No | `claude-3-5-sonnet-latest` | Legacy Anthropic model override retained for compatibility |
-| `OB2_EMBEDDING_API_KEY` | No | — | API key for the embedding provider; enables semantic retrieval when set |
-| `OB2_EMBEDDING_BASE_URL` | No | `https://api.openai.com/v1` | Base URL override for OpenAI-compatible providers such as OpenRouter |
-| `OB2_EMBEDDING_MODEL` | No | `text-embedding-3-small` | Embedding model used for atom capture and semantic retrieval |
-| `OB2_EMBEDDING_DIMENSIONS` | No | `1536` | Embedding width; must match the `memory_atom.embedding` vector column |
-| `OB2_EMBEDDINGS_ENABLED` | No | `1` when key is set | Set to `0` to disable embedding generation without removing credentials |
 | `OB2_API_TOKEN` | Yes (for API) | — | Bearer token for HTTP API auth |
 | `OB2_API_CLIENT_TOKENS` | No | — | Per-client tokens: `id:token,id:token` |
 | `OB2_API_HOST` | No | `127.0.0.1` | API bind address |
@@ -276,6 +265,13 @@ All configuration is read from environment variables. Copy `.env.example` to `.e
 | `OB2_USE_STUB_LLM` | No | `0` | Deprecated compatibility alias for `OB2_LLM_BACKEND=stub` |
 
 `anthropic-agent` is experimental and intended for local development. It uses Anthropic's Agent SDK and a local Claude Code login path; it is not documented here as a general-purpose third-party Claude subscription login flow.
+
+`gemini-api` uses the official `@google/genai` SDK. It now supports two auth modes:
+
+- Direct Gemini API key auth via `OB2_GEMINI_API_KEY`, `GEMINI_API_KEY`, or `GOOGLE_API_KEY`
+- Vertex AI auth via `OB2_GEMINI_PROJECT` / `GOOGLE_CLOUD_PROJECT` plus application-default credentials
+
+`OB2_GEMINI_PROJECT` accepts raw project ids/numbers and resource-style values such as `projects/1094394278776` or `projects/1094394278776/locations/us-central1`.
 
 ---
 
@@ -295,8 +291,6 @@ Atoms belong to entities (people, vehicles, projects, places, topics). Entities 
 
 The `memory/` projection is generated from the database and can be regenerated at any time. It is not the source of truth — the database is. If the projection drifts, consolidation rebuilds it.
 
-When embeddings are enabled, `memory_atom` also stores a nullable vector embedding. Existing atoms remain valid without embeddings; the backfill command fills them in later, and retrieval falls back gracefully while coverage is incomplete.
-
 ---
 
 ## Architecture
@@ -307,7 +301,7 @@ src/
   app/          Application services: capture, query, consolidation, projection, automation
   adapters/
     postgres/   Repository implementation, migrations, connection pool
-    llm/        Anthropic API + agent backends, deterministic test stub
+    llm/        Gemini Vertex backend, Anthropic API + agent backends, deterministic test stub
   transports/
     http/       HTTP API server
     mcp/        MCP proxy over HTTP
@@ -319,7 +313,7 @@ memory/         Generated projection (git-ignored in production use)
 fixtures/       Seed data
 ```
 
-The domain layer owns all contracts. Adapters implement them. Application services depend only on domain interfaces — not on Postgres or Anthropic directly. This makes the LLM swappable (the stub is used for all tests), the database swappable (an in-memory implementation covers unit and fast integration tests), and the transport layer independent from business logic.
+The domain layer owns all contracts. Adapters implement them. Application services depend only on domain interfaces — not on Postgres or any single LLM provider directly. This makes the LLM swappable (the stub is used for all tests), the database swappable (an in-memory implementation covers unit and fast integration tests), and the transport layer independent from business logic.
 
 ---
 

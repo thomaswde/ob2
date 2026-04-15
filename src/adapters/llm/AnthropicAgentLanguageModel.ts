@@ -1,4 +1,9 @@
-import { query, type JsonSchemaOutputFormat, type SDKResultMessage } from "@anthropic-ai/claude-agent-sdk";
+import {
+  query,
+  type JsonSchemaOutputFormat,
+  type SDKResultError,
+  type SDKResultMessage,
+} from "@anthropic-ai/claude-agent-sdk";
 import {
   AbstractAnthropicLanguageModel,
   parseJsonResponse,
@@ -6,6 +11,7 @@ import {
 } from "./AbstractAnthropicLanguageModel.js";
 
 const DEFAULT_AGENT_TIMEOUT_MS = 45_000;
+const DEFAULT_AGENT_MAX_TURNS = 3;
 
 export type AnthropicAgentQuery = typeof query;
 
@@ -22,6 +28,16 @@ type AgentQueryOptions = {
     forceLoginMethod: "claudeai";
   };
 };
+
+function extractAgentResultError(result: SDKResultError, fallback: string): Error {
+  if (result.subtype === "error_max_turns") {
+    return new Error(
+      "Anthropic agent backend hit the maximum turn limit before producing a final result. Increase the agent turn budget or use the API backend for cheaper, more direct one-shot calls.",
+    );
+  }
+
+  return new Error(result.errors.join("; ") || fallback);
+}
 
 function normalizeAnthropicAgentError(error: unknown): Error {
   const message = error instanceof Error ? error.message : String(error);
@@ -40,6 +56,7 @@ export class AnthropicAgentLanguageModel extends AbstractAnthropicLanguageModel 
     private readonly model: string,
     private readonly cwd = process.cwd(),
     private readonly timeoutMs = DEFAULT_AGENT_TIMEOUT_MS,
+    private readonly maxTurns = DEFAULT_AGENT_MAX_TURNS,
   ) {
     super();
   }
@@ -56,7 +73,7 @@ export class AnthropicAgentLanguageModel extends AbstractAnthropicLanguageModel 
         options: {
           cwd: this.cwd,
           model: this.model,
-          maxTurns: 1,
+          maxTurns: this.maxTurns,
           permissionMode: "plan",
           tools: [],
           settingSources: [],
@@ -109,7 +126,7 @@ export class AnthropicAgentLanguageModel extends AbstractAnthropicLanguageModel 
   protected async invokeText({ system, user }: AnthropicInvokeOptions): Promise<string> {
     const result = await this.runQuery(user, system);
     if (result.subtype !== "success") {
-      throw new Error(result.errors.join("; ") || "Anthropic agent request failed.");
+      throw extractAgentResultError(result, "Anthropic agent request failed.");
     }
 
     return result.result.trim();
@@ -125,7 +142,7 @@ export class AnthropicAgentLanguageModel extends AbstractAnthropicLanguageModel 
     });
 
     if (result.subtype !== "success") {
-      throw new Error(result.errors.join("; ") || `${context} failed.`);
+      throw extractAgentResultError(result, `${context} failed.`);
     }
 
     if (result.structured_output !== undefined) {

@@ -168,4 +168,26 @@ describe("AnthropicAgentLanguageModel", () => {
 
     await expect(model.summarize("hello")).rejects.toThrow("Anthropic agent authentication is unavailable");
   });
+
+  it("surfaces a clear max-turns error when the agent backend cannot finish in one pass", async () => {
+    const queryFn = vi.fn().mockReturnValue(
+      makeAgentHandle([
+        makeAgentResult({
+          subtype: "error_during_execution",
+          errors: ["placeholder"],
+        }),
+        {
+          ...makeAgentResult({
+            subtype: "error_during_execution",
+            errors: [],
+          }),
+          subtype: "error_max_turns" as const,
+        },
+      ]),
+    );
+
+    const model = new AnthropicAgentLanguageModel(queryFn as never, "claude-agent-test");
+
+    await expect(model.summarize("hello")).rejects.toThrow("hit the maximum turn limit");
+  });
 });

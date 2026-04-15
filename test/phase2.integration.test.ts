@@ -100,6 +100,40 @@ describe("Phase 2 services", () => {
     expect(result.reasoning.gate2Confidence).toBe("high");
   });
 
+  it("normalizes path-like Gate 2 slugs before deciding to fall back", async () => {
+    const result = await new MemoryQueryService(
+      repository,
+      new StubLanguageModel({
+        extract: () => ({
+          slugs: ["software-projects/northstar-api", "entities/software-projects/bluebird.md"],
+          confidence: "high",
+        }),
+      }),
+      rootDir,
+    ).query("what are Morgan's current projects");
+
+    expect(result.entities.some((entity) => entity.slug === "northstar-api")).toBe(true);
+    expect(result.entities.some((entity) => entity.slug === "bluebird")).toBe(true);
+    expect(result.reasoning.gatesUsed.includes("gate3")).toBe(false);
+  });
+
+  it("resolves exact entity names returned by Gate 2", async () => {
+    const result = await new MemoryQueryService(
+      repository,
+      new StubLanguageModel({
+        extract: () => ({
+          slugs: ["Northstar API", "Bluebird"],
+          confidence: "high",
+        }),
+      }),
+      rootDir,
+    ).query("what are Morgan's current projects");
+
+    expect(result.entities.some((entity) => entity.slug === "northstar-api")).toBe(true);
+    expect(result.entities.some((entity) => entity.slug === "bluebird")).toBe(true);
+    expect(result.reasoning.gatesUsed.includes("gate3")).toBe(false);
+  });
+
   it("passes life state context into Gate 2 selection", async () => {
     let capturedPrompt = "";
     const promptAwareService = new MemoryQueryService(
