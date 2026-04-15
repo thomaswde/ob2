@@ -11,8 +11,9 @@ import type {
   QueryMemoryResult,
   RequestLog,
 } from "../domain/types.js";
-import { captureMemory } from "./captureMemory.js";
+import { captureMemory, type EmbeddingServiceLike } from "./captureMemory.js";
 import { ConsolidationService, type ConsolidationResult } from "./ConsolidationService.js";
+import { EmbeddingService } from "./EmbeddingService.js";
 import { AutomationService, type AutomationServiceOptions } from "./AutomationService.js";
 import { ExportService } from "./ExportService.js";
 import { MemoryQueryService } from "./MemoryQueryService.js";
@@ -20,6 +21,7 @@ import { MemoryQueryService } from "./MemoryQueryService.js";
 export interface MemoryServicesOptions {
   rootDir?: string;
   automation?: AutomationServiceOptions;
+  embeddingService?: EmbeddingServiceLike;
 }
 
 export class MemoryServices {
@@ -27,6 +29,7 @@ export class MemoryServices {
   readonly consolidationService: ConsolidationService;
   readonly exportService: ExportService;
   readonly automationService: AutomationService | null;
+  private readonly embeddingService: EmbeddingServiceLike;
 
   constructor(
     private readonly repository: Repository,
@@ -34,7 +37,8 @@ export class MemoryServices {
     private readonly options: MemoryServicesOptions = {},
   ) {
     const rootDir = options.rootDir ?? process.cwd();
-    this.queryService = new MemoryQueryService(repository, languageModel, rootDir);
+    this.embeddingService = options.embeddingService ?? new EmbeddingService();
+    this.queryService = new MemoryQueryService(repository, languageModel, rootDir, this.embeddingService);
     this.consolidationService = new ConsolidationService(repository, languageModel, { rootDir });
     this.exportService = new ExportService(repository, rootDir);
     this.automationService = options.automation
@@ -46,7 +50,7 @@ export class MemoryServices {
     atom: MemoryAtom;
     automation: AutomationTriggerResult | null;
   }> {
-    const atom = await captureMemory(this.repository, input);
+    const atom = await captureMemory(this.repository, input, this.embeddingService);
     const automation =
       autoConsolidate && this.automationService ? await this.automationService.maybeTriggerAfterCapture() : null;
     return { atom, automation };

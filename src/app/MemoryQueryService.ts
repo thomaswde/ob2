@@ -35,10 +35,51 @@ function trimStringToTokens(value: string, maxTokens: number): string {
 }
 
 interface IndexEntry {
+  name: string;
   slug: string;
   summary: string;
   categorySlug: string;
   entityId: string | null;
+}
+
+interface EmbeddingServiceLike {
+  isEnabled(): boolean;
+  embed(text: string): Promise<number[] | null>;
+}
+
+function resolveSelectedSlug(rawSlug: string, indexEntries: Map<string, IndexEntry>): string | null {
+  const trimmed = rawSlug.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  if (indexEntries.has(trimmed)) {
+    return trimmed;
+  }
+
+  const normalized = trimmed.replace(/^entities\//, "").replace(/\.md$/i, "").replace(/\?id=.*$/i, "");
+  if (indexEntries.has(normalized)) {
+    return normalized;
+  }
+
+  const normalizedLower = normalized.toLowerCase();
+  const exactNameMatch = [...indexEntries.values()].filter((entry) => entry.name.trim().toLowerCase() === normalizedLower);
+  if (exactNameMatch.length === 1) {
+    return exactNameMatch[0]?.slug ?? null;
+  }
+
+  const segments = normalized.split("/").filter(Boolean);
+  const basename = segments.at(-1) ?? normalized;
+  if (indexEntries.has(basename)) {
+    return basename;
+  }
+
+  const uniqueBasenameMatch = [...indexEntries.values()].filter((entry) => entry.slug === basename);
+  if (uniqueBasenameMatch.length === 1) {
+    return uniqueBasenameMatch[0]?.slug ?? null;
+  }
+
+  return null;
 }
 
 function parseIndexEntries(indexContent: string): Map<string, IndexEntry> {
@@ -53,10 +94,12 @@ function parseIndexEntries(indexContent: string): Map<string, IndexEntry> {
     const slug = match[2] ?? "";
     const entityId = match[3] ?? null;
     const summary = match[4] ?? "";
+    const nameMatch = line.match(/- \[([^\]]+)\]\(entities\//);
+    const name = nameMatch?.[1] ?? slug;
     if (!categorySlug || !slug) {
       continue;
     }
-    result.set(slug, { slug, summary, categorySlug, entityId });
+    result.set(slug, { name, slug, summary, categorySlug, entityId });
   }
   return result;
 }
@@ -68,6 +111,7 @@ export class MemoryQueryService {
     private readonly repository: Repository,
     private readonly languageModel: LanguageModel,
     private readonly rootDir = process.cwd(),
+    private readonly embeddingService?: EmbeddingServiceLike,
   ) {}
 
   private get memoryDir(): string {
@@ -123,6 +167,90 @@ export class MemoryQueryService {
       summary: entry.summary,
       content,
     };
+  }
+
+  private async getQueryEmbedding(text: string): Promise<number[] | null> {
+    if (!this.embeddingService?.isEnabled()) {
+      return null;
+    }
+
+    try {
+      return await this.embeddingService.embed(text);
+    } catch (error) {
+      console.warn("Failed to generate query embedding:", error);
+      return null;
+    }
+  }
+
+  private parseEntityFrontmatter(content: string): string {
+    const frontmatterMatch = content.match(/^---\n[\s\S]*?\n---\n?/);
+    return frontmatterMatch?.[0]?.trimEnd() ?? "";
+  }
+
+  private renderFilteredEntityContent(frontmatter: string, atoms: MemoryAtom[]): string {
+    const bulletLines = atoms.map((atom) => `- ${atom.content} [source: ${atom.id}]`);
+    return `${frontmatter}\n\n${bulletLines.join("\n")}`;
+  }
+
+  private async loadFilteredEntityResult(entry: IndexEntry, atoms: MemoryAtom[]): Promise<QueryEntityResult> {
+    const content = await this.readCached(path.join(this.memoryDir, "entities", entry.categorySlug, `${entry.slug}.md`));
+    const frontmatter = this.parseEntityFrontmatter(content);
+    return {
+      slug: entry.slug,
+      summary: entry.summary,
+      content: frontmatter ? this.renderFilteredEntityContent(frontmatter, atoms) : content,
+    };
+  }
+
+  private async filterEntityAtoms(
+    queryEmbedding: number[],
+    entityIds: string[],
+    maxAtomsPerEntity: number,
+  ): Promise<Map<string, MemoryAtom[]>> {
+    const atomsWithEmbeddings = await this.repository.listValidAtomsWithEmbeddingsForEntities(entityIds);
+    const byEntity = new Map<string, Array<MemoryAtom & { embedding: number[] }>>();
+    for (const atom of atomsWithEmbeddings) {
+      if (!atom.entityId) {
+        continue;
+      }
+      const current = byEntity.get(atom.entityId) ?? [];
+      current.push(atom);
+      byEntity.set(atom.entityId, current);
+    }
+
+    const filtered = new Map<string, MemoryAtom[]>();
+    for (const [entityId, atoms] of byEntity.entries()) {
+      const ranked = atoms
+        .map((atom) => ({
+          atom,
+          score: this.cosineSimilarity(queryEmbedding, atom.embedding),
+        }))
+        .sort((a, b) => b.score - a.score)
+        .slice(0, maxAtomsPerEntity)
+        .map(({ atom }) => atom);
+      if (ranked.length > 0) {
+        filtered.set(entityId, ranked);
+      }
+    }
+
+    return filtered;
+  }
+
+  private cosineSimilarity(a: number[], b: number[]): number {
+    let dot = 0;
+    let magA = 0;
+    let magB = 0;
+    const length = Math.max(a.length, b.length);
+    for (let index = 0; index < length; index += 1) {
+      const left = a[index] ?? 0;
+      const right = b[index] ?? 0;
+      dot += left * right;
+      magA += left * left;
+      magB += right * right;
+    }
+
+    const denom = Math.sqrt(magA) * Math.sqrt(magB);
+    return denom === 0 ? 0 : dot / denom;
   }
 
   private trimResult(result: QueryMemoryResult): QueryMemoryResult {
@@ -234,14 +362,35 @@ export class MemoryQueryService {
     );
     const entities: QueryEntityResult[] = [];
     const seenSlugs = new Set<string>();
+    const queryEmbedding = await this.getQueryEmbedding(text);
+    const entityIdsForFiltering = [...new Set(gate2.slugs)].flatMap((rawSlug) => {
+      const slug = resolveSelectedSlug(rawSlug, indexEntries);
+      const entry = slug ? indexEntries.get(slug) : null;
+      return entry?.entityId ? [entry.entityId] : [];
+    });
+    const filteredAtomsByEntity =
+      queryEmbedding && entityIdsForFiltering.length > 0
+        ? await this.filterEntityAtoms(queryEmbedding, entityIdsForFiltering, 5)
+        : new Map<string, MemoryAtom[]>();
 
-    for (const slug of new Set(gate2.slugs)) {
+    for (const rawSlug of new Set(gate2.slugs)) {
+      const slug = resolveSelectedSlug(rawSlug, indexEntries);
+      if (!slug) {
+        continue;
+      }
+
       const entry = indexEntries.get(slug);
       if (!entry) {
         continue;
       }
       seenSlugs.add(slug);
-      entities.push(await this.loadEntityResult(entry));
+
+      const filteredAtoms = entry.entityId ? filteredAtomsByEntity.get(entry.entityId) ?? null : null;
+      if (filteredAtoms && filteredAtoms.length > 0) {
+        entities.push(await this.loadFilteredEntityResult(entry, filteredAtoms));
+      } else {
+        entities.push(await this.loadEntityResult(entry));
+      }
     }
 
     const gate4LinkedSlugs: string[] = [];
@@ -303,7 +452,15 @@ export class MemoryQueryService {
     let fallbackAtoms: MemoryAtom[] | null = null;
     if (entities.length === 0 || gate2.confidence === "low") {
       gatesUsed.push("gate3");
-      fallbackAtoms = await timeStep("gate3", async () => this.repository.searchValidAtomsLexical(text, fallbackLimit));
+      fallbackAtoms = await timeStep("gate3", async () => {
+        if (queryEmbedding) {
+          const semanticAtoms = await this.repository.searchValidAtomsSemantic(queryEmbedding, fallbackLimit);
+          if (semanticAtoms.length > 0) {
+            return semanticAtoms;
+          }
+        }
+        return this.repository.searchValidAtomsLexical(text, fallbackLimit);
+      });
     }
 
     return this.trimResult({

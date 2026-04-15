@@ -285,6 +285,18 @@ export class InMemoryRepository implements Repository {
       .sort((a, b) => this.sortAtoms(a, b));
   }
 
+  async storeAtomEmbedding(_atomId: string, _embedding: number[]): Promise<void> {}
+
+  async searchValidAtomsSemantic(_embedding: number[], _limit: number): Promise<MemoryAtom[]> {
+    return [];
+  }
+
+  async listValidAtomsWithEmbeddingsForEntities(
+    _entityIds: string[],
+  ): Promise<Array<MemoryAtom & { embedding: number[] }>> {
+    return [];
+  }
+
   async listLifeStateAtoms(limit = 100): Promise<MemoryAtom[]> {
     return [...this.atoms.values()]
       .filter((atom) => this.isAtomCurrentlyValid(atom))
