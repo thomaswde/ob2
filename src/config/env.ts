@@ -69,6 +69,31 @@ export function getAnthropicApiKey(): string | null {
   return process.env.ANTHROPIC_API_KEY ?? null;
 }
 
+export function getEmbeddingApiKey(): string | null {
+  loadDotEnv();
+  const value = process.env.OB2_EMBEDDING_API_KEY?.trim();
+  return value ? value : null;
+}
+
+export function getEmbeddingBaseUrl(): string {
+  loadDotEnv();
+  return process.env.OB2_EMBEDDING_BASE_URL?.trim() || "https://api.openai.com/v1";
+}
+
+export function getEmbeddingModel(): string {
+  loadDotEnv();
+  return process.env.OB2_EMBEDDING_MODEL?.trim() || "text-embedding-3-small";
+}
+
+export function getEmbeddingDimensions(): number {
+  return parsePositiveIntegerEnv("OB2_EMBEDDING_DIMENSIONS", 1536);
+}
+
+export function isEmbeddingEnabled(): boolean {
+  loadDotEnv();
+  return getEmbeddingApiKey() !== null && process.env.OB2_EMBEDDINGS_ENABLED?.trim() !== "0";
+}
+
 function getAnthropicDefaultModel(): string {
   loadDotEnv();
   return process.env.ANTHROPIC_MODEL ?? "claude-3-5-sonnet-latest";

@@ -16,6 +16,7 @@
     "mcp:start": "tsx src/cli/index.ts mcp serve",
     "automation:scheduled": "tsx src/cli/index.ts automation scheduled",
     "export:data": "tsx src/cli/index.ts export",
+    "backfill-embeddings": "tsx src/cli/backfillEmbeddings.ts",
     "benchmark:query": "tsx src/testing/queryBenchmark.ts",
     "db:migrate": "tsx src/cli/index.ts db migrate",
     "db:reset": "tsx src/cli/index.ts db reset --force",
@@ -27,6 +28,7 @@
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.107",
     "@anthropic-ai/sdk": "^0.88.0",
+    "openai": "^6.34.0",
     "pg": "^8.16.3"
   },
   "devDependencies": {

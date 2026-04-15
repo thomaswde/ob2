@@ -22,15 +22,17 @@ OB2 puts reasoning *before* lookup, not after:
 
 **Gate 0** — Classify whether the query needs memory at all. Skip entirely for general knowledge questions.
 
-**Gate 1** — Load a synthesized life-state narrative: active goals, standing constraints, recent changes, ongoing projects. This grounds every query with ambient context at zero per-turn cost.
+**Gate 1** — Load a synthesized life-state summary: only the facts that change how the AI should behave right now. Active goals, standing constraints, and recent life changes stay hot; stable biography and preferences stay out of the always-loaded context.
 
 **Gate 1.5** — Bridge atoms captured since the last consolidation run so nothing recent is invisible.
 
 **Gate 2** — An oracle pass: given the query *and* the user's current life state, reason across the full entity index to identify relevant entities — including non-obvious lateral connections. A query about scheduling might surface financial, project, and family-constraint entities the user never mentioned.
 
-**Gate 3** — Lexical fallback for weak-signal queries where Gate 2 confidence is low.
+**Gate 3** — Semantic fallback for weak-signal queries where Gate 2 confidence is low. Query embeddings search valid atoms by cosine similarity, with lexical search retained as a graceful fallback when embeddings are unavailable.
 
 **Gate 4** — One-hop traversal over entity relationships. If Gate 2 surfaces an entity, follow its high-confidence links to gather the surrounding context automatically.
+
+Within Gate 2, entity files are no longer loaded wholesale when embeddings are available. OB2 re-ranks each entity's atoms against the query and injects only the top-scoring subset, which keeps large entities useful instead of bloated.
 
 Each gate fires only when the one before it is insufficient. The result is context that's both cheap to retrieve and actually useful.
 
@@ -61,6 +63,14 @@ Start Postgres and apply migrations:
 ```bash
 docker compose up -d postgres
 npm run db:migrate
+```
+
+If you want semantic retrieval, set the embedding variables in `.env` before starting the API or capture pipeline. OpenAI-compatible providers are supported through `OB2_EMBEDDING_BASE_URL`, so OpenRouter works without changing the chat backend.
+
+For existing datasets, run the one-shot backfill after migrations:
+
+```bash
+npm run backfill-embeddings
 ```
 
 Optionally load the included fixture corpus to verify the system end-to-end before adding real data:
@@ -116,6 +126,8 @@ Response includes `lifeState`, recent unconsolidated atoms, matched entity summa
 ```
 
 `decayClass` is one of `profile`, `preference`, `relationship`, `decision`, `task`, or `ephemeral`. Higher importance and longer-lived decay classes receive higher retrieval weight over time.
+
+When embeddings are enabled, capture stores the atom immediately and generates the embedding asynchronously. Retrieval improves as embeddings are filled in, but capture latency does not depend on the embedding provider.
 
 **`GET /entity/:id`** — Fetch an entity record with its linked atoms and relationships.
 
@@ -195,6 +207,7 @@ npm run ob -- consolidate --force-enable
 # Database
 npm run ob -- db migrate                  # Apply pending migrations, seed categories
 npm run ob -- db reset --force            # Truncate and reseed (local dev only)
+npm run backfill-embeddings               # Backfill embeddings for existing atoms
 
 # Capture
 npm run ob -- capture "fact" \
@@ -248,6 +261,11 @@ All configuration is read from environment variables. Copy `.env.example` to `.e
 | `OB2_LLM_MODEL` | No | `claude-3-5-sonnet-latest` | Model used for the selected non-stub backend |
 | `ANTHROPIC_API_KEY` | Yes for `anthropic-api` | — | Anthropic API key for the production API backend |
 | `ANTHROPIC_MODEL` | No | `claude-3-5-sonnet-latest` | Legacy Anthropic model override retained for compatibility |
+| `OB2_EMBEDDING_API_KEY` | No | — | API key for the embedding provider; enables semantic retrieval when set |
+| `OB2_EMBEDDING_BASE_URL` | No | `https://api.openai.com/v1` | Base URL override for OpenAI-compatible providers such as OpenRouter |
+| `OB2_EMBEDDING_MODEL` | No | `text-embedding-3-small` | Embedding model used for atom capture and semantic retrieval |
+| `OB2_EMBEDDING_DIMENSIONS` | No | `1536` | Embedding width; must match the `memory_atom.embedding` vector column |
+| `OB2_EMBEDDINGS_ENABLED` | No | `1` when key is set | Set to `0` to disable embedding generation without removing credentials |
 | `OB2_API_TOKEN` | Yes (for API) | — | Bearer token for HTTP API auth |
 | `OB2_API_CLIENT_TOKENS` | No | — | Per-client tokens: `id:token,id:token` |
 | `OB2_API_HOST` | No | `127.0.0.1` | API bind address |
@@ -276,6 +294,8 @@ The atomic unit is the `memory_atom` — a single fact with:
 Atoms belong to entities (people, vehicles, projects, places, topics). Entities are organized into categories. Typed `entity_link` records connect related entities and are traversed by Gate 4 during retrieval.
 
 The `memory/` projection is generated from the database and can be regenerated at any time. It is not the source of truth — the database is. If the projection drifts, consolidation rebuilds it.
+
+When embeddings are enabled, `memory_atom` also stores a nullable vector embedding. Existing atoms remain valid without embeddings; the backfill command fills them in later, and retrieval falls back gracefully while coverage is incomplete.
 
 ---
 
