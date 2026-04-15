@@ -4,7 +4,16 @@ import type { CaptureMemoryInput, MemoryAtom } from "../domain/types.js";
 import { validateCaptureMemoryInput } from "../domain/validation.js";
 import { makeFingerprint, makeId } from "../utils/crypto.js";
 
-export async function captureMemory(repository: Repository, input: CaptureMemoryInput): Promise<MemoryAtom> {
+export interface EmbeddingServiceLike {
+  isEnabled(): boolean;
+  embed(text: string): Promise<number[] | null>;
+}
+
+export async function captureMemory(
+  repository: Repository,
+  input: CaptureMemoryInput,
+  embeddingService?: EmbeddingServiceLike,
+): Promise<MemoryAtom> {
   const validated = validateCaptureMemoryInput(input);
   const contentFingerprint = makeFingerprint(validated.content);
   const existing = await repository.getMemoryAtomByFingerprint(validated.sourceRef, contentFingerprint);
@@ -28,7 +37,7 @@ export async function captureMemory(repository: Repository, input: CaptureMemory
     }
   }
 
-  return repository.createMemoryAtom({
+  const atom = await repository.createMemoryAtom({
     id: makeId(),
     content: validated.content,
     contentFingerprint,
@@ -42,4 +51,23 @@ export async function captureMemory(repository: Repository, input: CaptureMemory
     invalidAt: validated.invalidAt,
     metadata: validated.metadata,
   });
+
+  if (embeddingService?.isEnabled()) {
+    embeddingService
+      .embed(atom.content)
+      .then((embedding) => {
+        if (!embedding) {
+          return;
+        }
+
+        return repository.storeAtomEmbedding(atom.id, embedding).catch((error: unknown) => {
+          console.warn(`Failed to store embedding for atom ${atom.id}:`, error);
+        });
+      })
+      .catch((error: unknown) => {
+        console.warn(`Failed to generate embedding for atom ${atom.id}:`, error);
+      });
+  }
+
+  return atom;
 }

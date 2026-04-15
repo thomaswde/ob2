@@ -42,6 +42,9 @@ export interface Repository {
   listEntitiesByParent(parentEntityId: string): Promise<Entity[]>;
   listPendingAtoms(limit?: number): Promise<MemoryAtom[]>;
   listValidAtomsForEntity(entityId: string): Promise<MemoryAtom[]>;
+  storeAtomEmbedding(atomId: string, embedding: number[]): Promise<void>;
+  searchValidAtomsSemantic(embedding: number[], limit: number): Promise<MemoryAtom[]>;
+  listValidAtomsWithEmbeddingsForEntities(entityIds: string[]): Promise<Array<MemoryAtom & { embedding: number[] }>>;
   listLifeStateAtoms(limit?: number): Promise<MemoryAtom[]>;
   listRecentBridgeAtoms(since: Date | null, limit: number): Promise<MemoryAtom[]>;
   searchValidAtomsLexical(text: string, limit: number): Promise<MemoryAtom[]>;

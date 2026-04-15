@@ -40,7 +40,8 @@ Each gate fires only when the one before it is insufficient. The result is conte
 
 - Node.js 20+
 - PostgreSQL 16 (Docker is the easiest path; a `docker-compose.yml` is included)
-- Anthropic access via either:
+- LLM access via either:
+  - `OB2_LLM_BACKEND=gemini-api` with either a Gemini API key or Vertex AI project auth
   - `OB2_LLM_BACKEND=anthropic-api` with `ANTHROPIC_API_KEY`
   - `OB2_LLM_BACKEND=anthropic-agent` with a local Claude Code / Claude Pro or Max login for experimental subscription-backed use
 
@@ -53,7 +54,7 @@ git clone <repo>
 cd ob2
 npm install
 cp .env.example .env
-# Edit .env — set OB2_LLM_BACKEND plus the corresponding Anthropic auth, and OB2_API_TOKEN
+# Edit .env — set OB2_LLM_BACKEND plus the corresponding provider auth, and OB2_API_TOKEN
 ```
 
 Start Postgres and apply migrations:
@@ -244,8 +245,14 @@ All configuration is read from environment variables. Copy `.env.example` to `.e
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `DATABASE_URL` | Yes | — | PostgreSQL connection string |
-| `OB2_LLM_BACKEND` | Yes | — | LLM backend: `stub`, `anthropic-api`, or `anthropic-agent` |
-| `OB2_LLM_MODEL` | No | `claude-3-5-sonnet-latest` | Model used for the selected non-stub backend |
+| `OB2_LLM_BACKEND` | Yes | — | LLM backend: `stub`, `gemini-api`, `anthropic-api`, or `anthropic-agent` |
+| `OB2_LLM_MODEL` | No | Provider-specific | Model used for the selected non-stub backend |
+| `OB2_GEMINI_API_KEY` | Yes for `gemini-api` unless using Vertex auth | — | Preferred direct Gemini API key |
+| `GEMINI_API_KEY` | Yes for `gemini-api` unless using Vertex auth | — | Compatibility alias for direct Gemini API key |
+| `GOOGLE_API_KEY` | Yes for `gemini-api` unless using Vertex auth | — | Compatibility alias supported by Google's SDK |
+| `OB2_GEMINI_PROJECT` | Yes for `gemini-api` when using Vertex auth instead of an API key | — | Vertex AI project id/number, or a resource like `projects/1094394278776` |
+| `OB2_GEMINI_LOCATION` | No | `global` | Vertex AI location for Gemini |
+| `GEMINI_MODEL` | No | `gemini-2.5-flash` | Legacy Gemini model override retained for compatibility |
 | `ANTHROPIC_API_KEY` | Yes for `anthropic-api` | — | Anthropic API key for the production API backend |
 | `ANTHROPIC_MODEL` | No | `claude-3-5-sonnet-latest` | Legacy Anthropic model override retained for compatibility |
 | `OB2_API_TOKEN` | Yes (for API) | — | Bearer token for HTTP API auth |
@@ -258,6 +265,13 @@ All configuration is read from environment variables. Copy `.env.example` to `.e
 | `OB2_USE_STUB_LLM` | No | `0` | Deprecated compatibility alias for `OB2_LLM_BACKEND=stub` |
 
 `anthropic-agent` is experimental and intended for local development. It uses Anthropic's Agent SDK and a local Claude Code login path; it is not documented here as a general-purpose third-party Claude subscription login flow.
+
+`gemini-api` uses the official `@google/genai` SDK. It now supports two auth modes:
+
+- Direct Gemini API key auth via `OB2_GEMINI_API_KEY`, `GEMINI_API_KEY`, or `GOOGLE_API_KEY`
+- Vertex AI auth via `OB2_GEMINI_PROJECT` / `GOOGLE_CLOUD_PROJECT` plus application-default credentials
+
+`OB2_GEMINI_PROJECT` accepts raw project ids/numbers and resource-style values such as `projects/1094394278776` or `projects/1094394278776/locations/us-central1`.
 
 ---
 
@@ -287,7 +301,7 @@ src/
   app/          Application services: capture, query, consolidation, projection, automation
   adapters/
     postgres/   Repository implementation, migrations, connection pool
-    llm/        Anthropic API + agent backends, deterministic test stub
+    llm/        Gemini Vertex backend, Anthropic API + agent backends, deterministic test stub
   transports/
     http/       HTTP API server
     mcp/        MCP proxy over HTTP
@@ -299,7 +313,7 @@ memory/         Generated projection (git-ignored in production use)
 fixtures/       Seed data
 ```
 
-The domain layer owns all contracts. Adapters implement them. Application services depend only on domain interfaces — not on Postgres or Anthropic directly. This makes the LLM swappable (the stub is used for all tests), the database swappable (an in-memory implementation covers unit and fast integration tests), and the transport layer independent from business logic.
+The domain layer owns all contracts. Adapters implement them. Application services depend only on domain interfaces — not on Postgres or any single LLM provider directly. This makes the LLM swappable (the stub is used for all tests), the database swappable (an in-memory implementation covers unit and fast integration tests), and the transport layer independent from business logic.
 
 ---
 

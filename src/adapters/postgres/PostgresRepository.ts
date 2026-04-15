@@ -29,6 +29,7 @@ import type {
 } from "../../domain/types.js";
 import { makeId } from "../../utils/crypto.js";
 import { slugify } from "../../utils/text.js";
+import { getPool } from "./db.js";
 
 type EntityRow = QueryResultRow & {
   id: string;
@@ -61,6 +62,10 @@ type AtomRow = QueryResultRow & {
   metadata: Record<string, unknown>;
   created_at: Date;
   updated_at: Date;
+};
+
+type AtomEmbeddingRow = AtomRow & {
+  embedding: string | null;
 };
 
 type EntityWithCategoryRow = EntityRow & {
@@ -187,6 +192,18 @@ function mapAtom(row: AtomRow): MemoryAtom {
   };
 }
 
+function parseEmbedding(value: string | null): number[] {
+  if (!value) {
+    return [];
+  }
+
+  return value
+    .replace(/^\[|\]$/g, "")
+    .split(",")
+    .map((part) => Number(part.trim()))
+    .filter((part) => Number.isFinite(part));
+}
+
 function mapEntityWithCategory(row: EntityWithCategoryRow): EntityWithCategory {
   return {
     ...mapEntity(row),
@@ -293,7 +310,9 @@ function requireRow<T>(row: T | null | undefined, message: string): NonNullable<
 }
 
 export class PostgresRepository implements Repository {
-  constructor(private readonly pool: Pool) {}
+  private embeddingSupportPromise: Promise<boolean> | null = null;
+
+  constructor(private readonly pool: Pool = getPool()) {}
 
   private async withClient<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
     const client = await this.pool.connect();
@@ -302,6 +321,27 @@ export class PostgresRepository implements Repository {
     } finally {
       client.release();
     }
+  }
+
+  private async hasEmbeddingSupport(): Promise<boolean> {
+    if (!this.embeddingSupportPromise) {
+      this.embeddingSupportPromise = this.pool
+        .query<{ supported: boolean }>(
+          `
+            SELECT EXISTS (
+              SELECT 1
+              FROM information_schema.columns
+              WHERE table_schema = current_schema()
+                AND table_name = 'memory_atom'
+                AND column_name = 'embedding'
+            ) AS supported
+          `,
+        )
+        .then((result) => result.rows[0]?.supported ?? false)
+        .catch(() => false);
+    }
+
+    return this.embeddingSupportPromise;
   }
 
   async createEntity(input: CreateEntityInput): Promise<Entity> {
@@ -582,6 +622,69 @@ export class PostgresRepository implements Repository {
       [entityId],
     );
     return result.rows.map(mapAtom);
+  }
+
+  async storeAtomEmbedding(atomId: string, embedding: number[]): Promise<void> {
+    if (!(await this.hasEmbeddingSupport())) {
+      return;
+    }
+
+    await this.pool.query(
+      `
+        UPDATE memory_atom
+        SET embedding = $1::vector
+        WHERE id = $2
+      `,
+      [`[${embedding.join(",")}]`, atomId],
+    );
+  }
+
+  async searchValidAtomsSemantic(embedding: number[], limit: number): Promise<MemoryAtom[]> {
+    if (!(await this.hasEmbeddingSupport())) {
+      return [];
+    }
+
+    const result = await this.pool.query<AtomRow>(
+      `
+        SELECT *
+        FROM memory_atom
+        WHERE embedding IS NOT NULL
+          AND ${ACTIVE_ATOM_FILTER}
+        ORDER BY embedding <=> $1::vector
+        LIMIT $2
+      `,
+      [`[${embedding.join(",")}]`, limit],
+    );
+    return result.rows.map(mapAtom);
+  }
+
+  async listValidAtomsWithEmbeddingsForEntities(
+    entityIds: string[],
+  ): Promise<Array<MemoryAtom & { embedding: number[] }>> {
+    if (entityIds.length === 0) {
+      return [];
+    }
+
+    if (!(await this.hasEmbeddingSupport())) {
+      return [];
+    }
+
+    const result = await this.pool.query<AtomEmbeddingRow>(
+      `
+        SELECT *
+        FROM memory_atom
+        WHERE entity_id = ANY($1::uuid[])
+          AND embedding IS NOT NULL
+          AND ${ACTIVE_ATOM_FILTER}
+        ORDER BY entity_id ASC, importance DESC, created_at DESC
+      `,
+      [entityIds],
+    );
+
+    return result.rows.map((row) => ({
+      ...mapAtom(row),
+      embedding: parseEmbedding(row.embedding),
+    }));
   }
 
   async listLifeStateAtoms(limit = 100): Promise<MemoryAtom[]> {
